@@ -1,0 +1,134 @@
+{
+  "id": "tpCallback000001",
+  "name": "TongaPass · Signaler à l’API",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "1540cb9c-c25c-4cf8-a04b-a35d2bb04c93",
+      "name": "Événement reçu",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Corps canonique + horodatage : la signature couvre exactement les octets envoyés.\nconst e = $json;\nconst event = { runId: e.runId, event: e.event, step: e.step, status: e.status,\n  detail: e.detail ? String(e.detail).slice(0, 900) : undefined, meta: e.meta, executionId: e.executionId };\nconst clean = Object.fromEntries(Object.entries(event).filter(([, v]) => v !== undefined && v !== null && v !== ''));\nconst body = JSON.stringify(clean);\nconst ts = String(Math.floor(Date.now() / 1000));\nreturn { json: { callbackUrl: e.callbackUrl, ts, body, toSign: ts + '.' + body } };"
+      },
+      "id": "b62f9a7d-503b-40e8-ab1d-c18c291163e4",
+      "name": "Préparer la signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ],
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "action": "hmac",
+        "type": "SHA256",
+        "value": "={{ $json.toSign }}",
+        "dataPropertyName": "signature",
+        "secret": "={{ $env.AUTOMATION_HMAC_SECRET }}",
+        "encoding": "hex"
+      },
+      "id": "7540dd1e-aabb-4930-a0a9-43ccdd478414",
+      "name": "Signer (HMAC-SHA256)",
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 1,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.callbackUrl }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-TongaPass-Timestamp",
+              "value": "={{ $json.ts }}"
+            },
+            {
+              "name": "X-TongaPass-Signature",
+              "value": "=sha256={{ $json.signature }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.body }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "e00bd19c-7b06-4e98-aa9e-0102712ba5fe",
+      "name": "Envoyer à l’API TongaPass",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1500
+    }
+  ],
+  "connections": {
+    "Événement reçu": {
+      "main": [
+        [
+          {
+            "node": "Préparer la signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Préparer la signature": {
+      "main": [
+        [
+          {
+            "node": "Signer (HMAC-SHA256)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signer (HMAC-SHA256)": {
+      "main": [
+        [
+          {
+            "node": "Envoyer à l’API TongaPass",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "timezone": "Indian/Antananarivo"
+  },
+  "pinData": {}
+}

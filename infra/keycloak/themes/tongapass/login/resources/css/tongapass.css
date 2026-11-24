@@ -1,0 +1,236 @@
+/*
+ * Charte TongaPass « lagon » appliquée à la connexion Keycloak.
+ * Surfaces claires, texte bleu nuit et bouton lagon. Aucun dégradé ni flou.
+ * Police Plus Jakarta Sans embarquée (licence SIL OFL 1.1, voir fonts/OFL.txt) :
+ * aucune requête vers un CDN, compatible avec une CSP stricte.
+ */
+@font-face {
+  font-family: 'Plus Jakarta Sans Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 200 800;
+  src: url('../fonts/plus-jakarta-sans-latin-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191,
+    U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Plus Jakarta Sans Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 200 800;
+  src: url('../fonts/plus-jakarta-sans-latin-ext-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020,
+    U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+:root {
+  --tp-canvas: #f3f7f6;
+  --tp-surface: #ffffff;
+  --tp-ink: #112e32;
+  --tp-ink-2: #3d575c;
+  --tp-ink-3: #126756;
+  --tp-line: #d8e4e0;
+  --tp-line-strong: #9bb6af;
+  --tp-brand: #126756;
+  --tp-brand-strong: #112e32;
+  --tp-info: #3d5c78;
+  --tp-danger: #a23a2a;
+  --tp-focus-ring: rgb(18 103 86 / 0.2);
+
+  --pf-v5-global--FontFamily--text: 'Plus Jakarta Sans Variable', 'Plus Jakarta Sans', 'Segoe UI', system-ui, sans-serif;
+  --pf-v5-global--FontFamily--heading: var(--pf-v5-global--FontFamily--text);
+  --pf-v5-global--primary-color--100: var(--tp-brand);
+  --pf-v5-global--primary-color--200: var(--tp-brand-strong);
+  --pf-v5-global--link--Color: var(--tp-info);
+  --pf-v5-global--link--Color--hover: #2c4459;
+  --pf-v5-global--BorderRadius--sm: 8px;
+  --pf-v5-global--danger-color--100: var(--tp-danger);
+}
+
+/* Fond ivoire uni */
+html,
+body,
+.pf-v5-c-login,
+.pf-v5-c-login__container {
+  background: var(--tp-canvas) !important;
+}
+body {
+  color: var(--tp-ink);
+  font-family: var(--pf-v5-global--FontFamily--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* En-tête : marque à gauche du mot-symbole, « Tonga » à l'encre et « Pass » en cacao */
+#kc-header,
+#kc-header-wrapper,
+.pf-v5-c-login__header,
+.pf-v5-c-brand {
+  color: var(--tp-ink) !important;
+  text-transform: none !important;
+  letter-spacing: -0.01em;
+}
+#kc-header-wrapper {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 24px;
+  font-weight: 700;
+  padding: 0;
+}
+#kc-header-wrapper::before {
+  content: '';
+  width: 36px;
+  height: 36px;
+  flex: none;
+  background: url('../img/logo.svg') center / contain no-repeat;
+}
+.tp-wordmark {
+  font-weight: 700;
+}
+.tp-pass {
+  color: var(--tp-brand);
+}
+.tp-tagline {
+  display: block;
+  margin-top: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--tp-ink-3);
+}
+
+/* Carte : surface pleine, bordure fine */
+.pf-v5-c-login__main {
+  background: var(--tp-surface) !important;
+  border: 1px solid var(--tp-line) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 1px 2px rgb(15 46 44 / 0.06) !important;
+  overflow: hidden;
+}
+.pf-v5-c-login__main::before,
+.pf-v5-c-login__main::after,
+.pf-v5-c-login__main-header::before,
+.pf-v5-c-login__main-header::after {
+  display: none !important;
+  content: none !important;
+}
+.pf-v5-c-login__main-header {
+  border: 0 !important;
+  padding-top: 30px !important;
+}
+.pf-v5-c-login__main-header h1,
+#kc-page-title {
+  font-size: 20px !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.01em;
+  color: var(--tp-ink) !important;
+}
+
+/* Champs */
+.pf-v5-c-form__label-text {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--tp-ink);
+}
+.pf-v5-c-form-control {
+  --pf-v5-c-form-control--BorderRadius: 8px;
+  --pf-v5-c-form-control--before--BorderColor: var(--tp-line-strong);
+  --pf-v5-c-form-control--after--BorderColor: transparent;
+  --pf-v5-c-form-control--hover--after--BorderColor: transparent;
+  --pf-v5-c-form-control--m-expanded--after--BorderColor: transparent;
+  border-radius: 8px;
+  background: var(--tp-surface);
+  transition: box-shadow 200ms ease-out;
+}
+/* Bordure uniforme sur les quatre côtés (PatternFly ne souligne que le bas) */
+.pf-v5-c-form-control::before,
+.pf-v5-c-menu-toggle::before {
+  border: 1px solid var(--tp-line-strong) !important;
+  border-radius: 8px;
+}
+.pf-v5-c-form-control::after,
+.pf-v5-c-menu-toggle::after {
+  border: 0 !important;
+}
+.pf-v5-c-form-control:focus-within {
+  box-shadow: 0 0 0 3px var(--tp-focus-ring);
+}
+.pf-v5-c-form-control:focus-within::before {
+  border-color: var(--tp-brand) !important;
+}
+.pf-v5-c-form-control > :is(input, select, textarea):focus,
+.pf-v5-c-form-control > :is(input, select, textarea):focus-visible {
+  outline: none;
+}
+/* Mot de passe et bouton « Montrer » : un seul bloc, arrondi aux seules extrémités, même bordure
+   et même anneau de focus que les autres champs */
+.pf-v5-c-input-group {
+  border-radius: 8px;
+  transition: box-shadow 200ms ease-out;
+}
+.pf-v5-c-input-group:focus-within {
+  box-shadow: 0 0 0 3px var(--tp-focus-ring);
+}
+.pf-v5-c-input-group .pf-v5-c-form-control:focus-within {
+  box-shadow: none;
+}
+.pf-v5-c-input-group > .pf-v5-c-input-group__item.pf-m-fill > .pf-v5-c-form-control,
+.pf-v5-c-input-group > .pf-v5-c-input-group__item.pf-m-fill > .pf-v5-c-form-control::before {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.pf-v5-c-input-group > .pf-v5-c-input-group__item > .pf-v5-c-button.pf-m-control {
+  border-radius: 0 8px 8px 0;
+  background: var(--tp-surface);
+  color: var(--tp-ink-3);
+}
+.pf-v5-c-input-group > .pf-v5-c-input-group__item > .pf-v5-c-button.pf-m-control::after {
+  border: 1px solid var(--tp-line-strong) !important;
+  border-left: 0 !important;
+  border-radius: 0 8px 8px 0;
+}
+.pf-v5-c-input-group > .pf-v5-c-input-group__item > .pf-v5-c-button.pf-m-control:hover {
+  color: var(--tp-ink);
+}
+.pf-v5-c-input-group:focus-within > .pf-v5-c-input-group__item > .pf-v5-c-button.pf-m-control::after {
+  border-color: var(--tp-brand) !important;
+}
+
+/* Bouton principal : cacao plein, texte ivoire (6,4:1), expresso au survol */
+.pf-v5-c-button.pf-m-primary,
+#kc-login {
+  --pf-v5-c-button--m-primary--BackgroundColor: var(--tp-brand);
+  --pf-v5-c-button--m-primary--hover--BackgroundColor: var(--tp-brand-strong);
+  --pf-v5-c-button--m-primary--focus--BackgroundColor: var(--tp-brand-strong);
+  --pf-v5-c-button--m-primary--active--BackgroundColor: var(--tp-brand-strong);
+  background: var(--tp-brand) !important;
+  color: #ffffff !important;
+  font-weight: 600;
+  border-radius: 8px !important;
+  box-shadow: none;
+  transition: background-color 150ms ease-out;
+}
+.pf-v5-c-button.pf-m-primary:hover,
+#kc-login:hover {
+  background: var(--tp-brand-strong) !important;
+}
+.pf-v5-c-button:focus-visible {
+  outline: 2px solid var(--tp-info);
+  outline-offset: 2px;
+}
+
+/* Alertes : bordure fine, coins arrondis */
+.pf-v5-c-alert {
+  border-radius: 8px;
+  box-shadow: none !important;
+  border: 1px solid var(--tp-line);
+}
+.pf-v5-c-alert::before {
+  display: none !important;
+}
+
+/* Edge ajoute son propre bouton « afficher le mot de passe » : on garde celui de Keycloak */
+input::-ms-reveal,
+input::-ms-clear {
+  display: none;
+}

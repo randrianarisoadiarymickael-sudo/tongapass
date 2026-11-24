@@ -1,0 +1,2 @@
+# Exceptions Trivy justifiées (revue à chaque version)
+# AVD-DS-0002 : l'image n8n officielle tourne déjà en utilisateur « node » (non root)

@@ -1,0 +1,360 @@
+{
+  "realm": "tongapass",
+  "displayName": "TongaPass",
+  "displayNameHtml": "<span class=\"tp-wordmark\">Tonga<span class=\"tp-pass\">Pass</span></span>",
+  "enabled": true,
+  "loginTheme": "tongapass",
+  "internationalizationEnabled": true,
+  "supportedLocales": [
+    "fr",
+    "en"
+  ],
+  "defaultLocale": "fr",
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": true,
+  "rememberMe": true,
+  "verifyEmail": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "failureFactor": 5,
+  "waitIncrementSeconds": 60,
+  "maxFailureWaitSeconds": 900,
+  "passwordPolicy": "length(12) and upperCase(1) and lowerCase(1) and digits(1) and notUsername and notEmail and passwordHistory(3)",
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "actionTokenGeneratedByAdminLifespan": 172800,
+  "actionTokenGeneratedByUserLifespan": 3600,
+  "eventsEnabled": true,
+  "eventsExpiration": 2592000,
+  "enabledEventTypes": [
+    "LOGIN",
+    "LOGIN_ERROR",
+    "LOGOUT",
+    "UPDATE_PASSWORD",
+    "EXECUTE_ACTIONS",
+    "CODE_TO_TOKEN",
+    "CODE_TO_TOKEN_ERROR"
+  ],
+  "adminEventsEnabled": true,
+  "adminEventsDetailsEnabled": true,
+  "smtpServer": {
+    "host": "${KC_SMTP_HOST:mailpit}",
+    "port": "${KC_SMTP_PORT:1025}",
+    "from": "${KC_SMTP_FROM:noreply@tongapass.local}",
+    "fromDisplayName": "TongaPass",
+    "ssl": "false",
+    "starttls": "false",
+    "auth": "false"
+  },
+  "roles": {
+    "realm": [
+      {
+        "name": "tp-admin",
+        "description": "TongaPass — administration IAM : profils d'accès, intégrations, tout le portail"
+      },
+      {
+        "name": "tp-hr",
+        "description": "TongaPass — ressources humaines : déclarer arrivées et départs"
+      },
+      {
+        "name": "tp-auditor",
+        "description": "TongaPass — audit : lecture seule, journal d'audit et intégrité"
+      },
+      {
+        "name": "employee",
+        "description": "Socle commun de tout salarié provisionné"
+      },
+      {
+        "name": "developer",
+        "description": "Accès aux applications de développement"
+      },
+      {
+        "name": "devops",
+        "description": "Accès aux pipelines et à l'outillage d'exploitation"
+      },
+      {
+        "name": "people-ops",
+        "description": "Accès aux outils RH"
+      },
+      {
+        "name": "finance",
+        "description": "Accès aux outils financiers"
+      },
+      {
+        "name": "support",
+        "description": "Accès à l'outil de support client"
+      },
+      {
+        "name": "intern",
+        "description": "Accès restreint des stagiaires"
+      }
+    ]
+  },
+  "groups": [
+    {
+      "name": "Engineering",
+      "path": "/Engineering",
+      "attributes": {
+        "description": [
+          "Équipes produit et technique"
+        ]
+      }
+    },
+    {
+      "name": "People",
+      "path": "/People",
+      "attributes": {
+        "description": [
+          "Ressources humaines"
+        ]
+      }
+    },
+    {
+      "name": "Finance",
+      "path": "/Finance",
+      "attributes": {
+        "description": [
+          "Direction financière"
+        ]
+      }
+    },
+    {
+      "name": "Support",
+      "path": "/Support",
+      "attributes": {
+        "description": [
+          "Relation client"
+        ]
+      }
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "tongapass-portal",
+      "name": "TongaPass — portail RH",
+      "description": "Application web (SPA) — client public avec PKCE S256",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": true,
+      "fullScopeAllowed": false,
+      "rootUrl": "${TP_PORTAL_URL:http://localhost:8088}",
+      "baseUrl": "/",
+      "redirectUris": [
+        "${TP_PORTAL_URL:http://localhost:8088}/*",
+        "http://localhost:5173/*"
+      ],
+      "webOrigins": [
+        "${TP_PORTAL_URL:http://localhost:8088}",
+        "http://localhost:5173"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "${TP_PORTAL_URL:http://localhost:8088}/*##http://localhost:5173/*",
+        "access.token.lifespan": "300"
+      },
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "profile",
+        "roles",
+        "email",
+        "basic"
+      ],
+      "optionalClientScopes": [
+        "offline_access"
+      ],
+      "protocolMappers": [
+        {
+          "name": "audience-tongapass-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "tongapass-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "tongapass-api",
+      "name": "TongaPass — API",
+      "description": "Audience des jetons d'accès vérifiés par l'API (aucun flux de connexion)",
+      "enabled": true,
+      "bearerOnly": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    },
+    {
+      "clientId": "tongapass-provisioner",
+      "name": "TongaPass — provisionnement n8n",
+      "description": "Compte de service utilisé par n8n (client_credentials). Droits limités à la gestion des utilisateurs.",
+      "enabled": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${TP_PROVISIONER_SECRET}",
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": true,
+      "attributes": {
+        "access.token.lifespan": "120"
+      },
+      "defaultClientScopes": [
+        "basic",
+        "roles",
+        "kc-admin-api"
+      ],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "tongapass-auditor",
+      "name": "TongaPass — contrôle de conformité",
+      "description": "Compte de service en lecture seule utilisé par l'API pour comparer les droits réels aux droits attendus.",
+      "enabled": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${TP_AUDITOR_SECRET}",
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": true,
+      "defaultClientScopes": [
+        "basic",
+        "roles",
+        "kc-admin-api"
+      ],
+      "optionalClientScopes": [],
+      "attributes": {
+        "access.token.lifespan": "120"
+      }
+    }
+  ],
+  "scopeMappings": [
+    {
+      "client": "tongapass-portal",
+      "roles": [
+        "tp-admin",
+        "tp-hr",
+        "tp-auditor"
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "service-account-tongapass-provisioner",
+      "enabled": true,
+      "serviceAccountClientId": "tongapass-provisioner",
+      "realmRoles": [],
+      "clientRoles": {
+        "realm-management": [
+          "manage-users",
+          "view-users",
+          "query-users",
+          "query-groups",
+          "view-realm"
+        ]
+      }
+    },
+    {
+      "username": "service-account-tongapass-auditor",
+      "enabled": true,
+      "serviceAccountClientId": "tongapass-auditor",
+      "realmRoles": [],
+      "clientRoles": {
+        "realm-management": [
+          "view-users",
+          "query-users",
+          "query-groups"
+        ]
+      }
+    },
+    {
+      "username": "admin.it",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Mamy",
+      "lastName": "Rakotobe",
+      "email": "admin.it@tongapass.local",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${TP_DEMO_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "tp-admin"
+      ],
+      "attributes": {
+        "locale": [
+          "fr"
+        ]
+      }
+    },
+    {
+      "username": "rh.manager",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Hanta",
+      "lastName": "Rasoanaivo",
+      "email": "rh.manager@tongapass.local",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${TP_DEMO_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "tp-hr"
+      ],
+      "attributes": {
+        "locale": [
+          "fr"
+        ]
+      }
+    },
+    {
+      "username": "auditeur",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Fara",
+      "lastName": "Andriamihaja",
+      "email": "auditeur@tongapass.local",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${TP_DEMO_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "tp-auditor"
+      ],
+      "attributes": {
+        "locale": [
+          "fr"
+        ]
+      }
+    }
+  ]
+}

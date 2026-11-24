@@ -1,0 +1,24 @@
+# Dépendances et artefacts
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+playwright-report/
+test-results/
+e2e/.auth/
+
+# Secrets : jamais versionnés
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Divers
+*.log
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+playwright-report-stack/
+e2e/screenshots/

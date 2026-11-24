@@ -1,0 +1,16 @@
+title = "TongaPass — règles Gitleaks"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Valeurs factices des tests et des doublures (aucun secret réel)"
+paths = [
+  '''apps/api/test/.*''',
+  '''\.env\.example''',
+]
+regexes = [
+  '''test-hmac-secret-0123456789abcdef0123456789''',
+  '''test-webhook-token-0123456789abcdef''',
+  '''ci-(hmac-secret|webhook-token)-[0-9a-f]+''',
+]

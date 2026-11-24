@@ -1,0 +1,589 @@
+{
+  "id": "tpOnboarding0001",
+  "name": "TongaPass · Arrivée (onboarding)",
+  "active": true,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "tongapass/onboarding",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "03fad0f5-875a-46ed-ae4a-0c82c2b728d7",
+      "name": "Webhook TongaPass",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "c49d6daa-29c8-461b-a8a1-5148c4f7a566",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "tpWebhookAuth001",
+          "name": "TongaPass — jeton webhook"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ accepted: true, executionId: $execution.id }) }}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "id": "8e5318d7-1c4c-454c-ad3b-b1f1ab2d7b94",
+      "name": "Accusé de réception",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Contrat d'entrée : voir automation/n8n/README.md\nconst body = $('Webhook TongaPass').first().json.body;\nif (!body || !body.runId || !body.employee || !body.employee.username) {\n  throw new Error('Charge utile TongaPass invalide');\n}\nreturn [{ json: body }];"
+      },
+      "id": "1aa0b96e-4d9f-4751-ac32-d49724317e8e",
+      "name": "Préparer le contexte",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ],
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ---------------------------------------------------------------------------\n// Prélude commun injecté en tête de chaque nœud Code par build-workflows.mjs.\n// Il fournit : le contexte TongaPass, un client HTTP tolérant aux erreurs,\n// un générateur de mots de passe aléatoires et un constructeur d'événements.\n// ---------------------------------------------------------------------------\nconst ctx = $('Préparer le contexte').first().json;\nconst employee = ctx.employee;\nconst access = ctx.access || { realmRoles: [], groups: [], giteaTeams: [], chatChannels: [] };\nconst options = ctx.options || {};\n\n/** Appel HTTP qui ne lève pas d'exception sur les statuts 4xx/5xx. */\nconst http = async (request) => {\n  const response = await this.helpers.httpRequest({\n    json: true,\n    returnFullResponse: true,\n    ignoreHttpStatusErrors: true,\n    timeout: 15000,\n    ...request,\n  });\n  let body = response.body;\n  if (typeof body === 'string' && body.length) {\n    try {\n      body = JSON.parse(body);\n    } catch {\n      /* corps texte */\n    }\n  }\n  return { status: response.statusCode, body, headers: response.headers || {} };\n};\n\nconst describe = (res) =>\n  `HTTP ${res.status} ${typeof res.body === 'string' ? res.body : JSON.stringify(res.body ?? '')}`.slice(0, 240);\n\n/** Mot de passe jetable fort, jamais communiqué : l'utilisateur définit le sien (lien d'activation). */\nconst randomPassword = () => {\n  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789-_!@#%';\n  // Module « crypto » autorisé par NODE_FUNCTION_ALLOW_BUILTIN=crypto (docker-compose.yml)\n  const bytes = require('crypto').randomBytes(28);\n  return `${Array.from(bytes, (b) => alphabet[b % alphabet.length]).join('')}Aa9!`;\n};\n\n/** Événement d'étape attendu par l'API (POST /automation/events, signé par le sous-workflow). */\nconst stepEvent = (step, status, detail, meta = {}) => ({\n  json: { runId: ctx.runId, callbackUrl: ctx.callbackUrl, event: 'step', step, status, detail, meta },\n});\n\n// Jeton du compte de service « tongapass-provisioner » (client_credentials, droits limités à la gestion des utilisateurs).\nconst KC = $env.KEYCLOAK_URL;\nconst REALM = $env.KEYCLOAK_REALM;\nconst ADMIN = `${KC}/admin/realms/${REALM}`;\n\nconst keycloakToken = async () => {\n  const form = [\n    'grant_type=client_credentials',\n    `client_id=${encodeURIComponent($env.KEYCLOAK_CLIENT_ID)}`,\n    `client_secret=${encodeURIComponent($env.KEYCLOAK_CLIENT_SECRET)}`,\n  ].join('&');\n  const res = await http({\n    method: 'POST',\n    url: `${KC}/realms/${REALM}/protocol/openid-connect/token`,\n    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },\n    body: form,\n  });\n  if (res.status !== 200 || !res.body?.access_token) {\n    throw new Error(`authentification du compte de service refusée (${describe(res)})`);\n  }\n  return res.body.access_token;\n};\n\nconst findKeycloakUser = async (headers) => {\n  if (employee.keycloakUserId) {\n    const byId = await http({ method: 'GET', url: `${ADMIN}/users/${employee.keycloakUserId}`, headers });\n    if (byId.status === 200) return byId.body;\n  }\n  const found = await http({ method: 'GET', url: `${ADMIN}/users`, qs: { username: employee.username, exact: 'true' }, headers });\n  return Array.isArray(found.body) && found.body.length ? found.body[0] : null;\n};\n\n// Keycloak : compte (idempotent), rôles du profil (moindre privilège), groupes, lien d'activation.\nconst results = [];\n\nlet token;\ntry {\n  token = await keycloakToken();\n} catch (error) {\n  return [stepEvent('keycloak.account', 'FAILED', `Keycloak injoignable : ${error.message}`)];\n}\nconst headers = { Authorization: `Bearer ${token}` };\n\n// 1. Compte -----------------------------------------------------------------\nlet userId = null;\ntry {\n  const representation = {\n    username: employee.username,\n    email: employee.workEmail,\n    firstName: employee.firstName,\n    lastName: employee.lastName,\n    enabled: true,\n    emailVerified: true,\n    requiredActions: ['UPDATE_PASSWORD'],\n    attributes: {\n      tongapassEmployeeId: [employee.id],\n      employeeNumber: [employee.employeeNumber],\n      department: [employee.department],\n      jobTitle: [employee.jobTitle],\n    },\n  };\n  const existing = await findKeycloakUser(headers);\n  if (existing) {\n    // Idempotence : on ne réutilise un compte que s'il appartient bien à cet employé.\n    if (existing.attributes?.tongapassEmployeeId?.[0] !== employee.id) {\n      throw new Error(`l'identifiant « ${employee.username} » appartient déjà à un autre compte Keycloak`);\n    }\n    userId = existing.id;\n    await http({ method: 'PUT', url: `${ADMIN}/users/${userId}`, headers, body: { ...representation, requiredActions: existing.requiredActions } });\n  } else {\n    const created = await http({ method: 'POST', url: `${ADMIN}/users`, headers, body: representation });\n    if (created.status !== 201) throw new Error(`création refusée (${describe(created)})`);\n    userId = String(created.headers.location || '').split('/').pop() || (await findKeycloakUser(headers))?.id;\n  }\n  if (!userId) throw new Error('identifiant du compte introuvable après création');\n  results.push(\n    stepEvent('keycloak.account', 'SUCCEEDED', `Compte « ${employee.username} » prêt, mot de passe à définir à la première connexion`, {\n      userId,\n      username: employee.username,\n    }),\n  );\n} catch (error) {\n  results.push(stepEvent('keycloak.account', 'FAILED', error.message));\n  return results;\n}\n\n// 2. Rôles et groupes ---------------------------------------------------------\ntry {\n  const assignable = new Set(String($env.TP_ASSIGNABLE_ROLES || '').split(',').map((role) => role.trim()).filter(Boolean));\n  const wanted = (access.realmRoles || []).filter((role) => !role.startsWith('tp-') && assignable.has(role));\n  const refused = (access.realmRoles || []).filter((role) => !wanted.includes(role));\n  const representations = [];\n  for (const name of wanted) {\n    const role = await http({ method: 'GET', url: `${ADMIN}/roles/${encodeURIComponent(name)}`, headers });\n    if (role.status !== 200) throw new Error(`rôle « ${name} » introuvable dans le royaume`);\n    representations.push({ id: role.body.id, name: role.body.name });\n  }\n  if (representations.length) {\n    const mapped = await http({ method: 'POST', url: `${ADMIN}/users/${userId}/role-mappings/realm`, headers, body: representations });\n    if (mapped.status >= 300) throw new Error(`attribution des rôles refusée (${describe(mapped)})`);\n  }\n  const joined = [];\n  if ((access.groups || []).length) {\n    const groups = await http({ method: 'GET', url: `${ADMIN}/groups`, qs: { briefRepresentation: 'true', max: '200' }, headers });\n    for (const name of access.groups) {\n      const group = (Array.isArray(groups.body) ? groups.body : []).find((candidate) => candidate.name === name);\n      if (!group) throw new Error(`groupe « ${name} » introuvable`);\n      const added = await http({ method: 'PUT', url: `${ADMIN}/users/${userId}/groups/${group.id}`, headers });\n      if (added.status >= 300) throw new Error(`ajout au groupe ${name} refusé (${describe(added)})`);\n      joined.push(name);\n    }\n  }\n  const refusedText = refused.length ? ` · refusés (hors catalogue) : ${refused.join(', ')}` : '';\n  results.push(\n    stepEvent('keycloak.roles', 'SUCCEEDED', `Rôles : ${wanted.join(', ') || 'aucun'} · groupes : ${joined.join(', ') || 'aucun'}${refusedText}`, {\n      roles: wanted.join(','),\n      groups: joined.join(','),\n    }),\n  );\n} catch (error) {\n  results.push(stepEvent('keycloak.roles', 'FAILED', error.message));\n}\n\n// 3. Lien d'activation (Keycloak envoie l'e-mail via son SMTP) -----------------\ntry {\n  const sent = await http({\n    method: 'PUT',\n    url: `${ADMIN}/users/${userId}/execute-actions-email`,\n    qs: { lifespan: '172800' },\n    headers,\n    body: ['UPDATE_PASSWORD'],\n  });\n  if (sent.status >= 300) throw new Error(describe(sent));\n  results.push(stepEvent('keycloak.activation', 'SUCCEEDED', `Lien d'activation valable 48 h envoyé à ${employee.workEmail}`));\n} catch (error) {\n  results.push(stepEvent('keycloak.activation', 'FAILED', `envoi du lien impossible : ${error.message}`));\n}\n\nreturn results;"
+      },
+      "id": "2c9699af-10d7-4774-a327-d688cd082ee9",
+      "name": "Keycloak · compte, rôles, activation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        300
+      ],
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "tpCallback000001",
+          "mode": "id"
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "110f47ad-a71d-43de-a485-43ceef30c37f",
+      "name": "Signaler · Keycloak",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        880,
+        300
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "ac433881-d896-4f1a-a28a-bbee1d1b7344",
+              "leftValue": "={{ $('Keycloak · compte, rôles, activation').all().some(i => i.json.step === 'keycloak.account' && i.json.status === 'SUCCEEDED') }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7f30d58c-7dea-406e-a658-9cbe873e11cc",
+      "name": "Compte Keycloak créé ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ---------------------------------------------------------------------------\n// Prélude commun injecté en tête de chaque nœud Code par build-workflows.mjs.\n// Il fournit : le contexte TongaPass, un client HTTP tolérant aux erreurs,\n// un générateur de mots de passe aléatoires et un constructeur d'événements.\n// ---------------------------------------------------------------------------\nconst ctx = $('Préparer le contexte').first().json;\nconst employee = ctx.employee;\nconst access = ctx.access || { realmRoles: [], groups: [], giteaTeams: [], chatChannels: [] };\nconst options = ctx.options || {};\n\n/** Appel HTTP qui ne lève pas d'exception sur les statuts 4xx/5xx. */\nconst http = async (request) => {\n  const response = await this.helpers.httpRequest({\n    json: true,\n    returnFullResponse: true,\n    ignoreHttpStatusErrors: true,\n    timeout: 15000,\n    ...request,\n  });\n  let body = response.body;\n  if (typeof body === 'string' && body.length) {\n    try {\n      body = JSON.parse(body);\n    } catch {\n      /* corps texte */\n    }\n  }\n  return { status: response.statusCode, body, headers: response.headers || {} };\n};\n\nconst describe = (res) =>\n  `HTTP ${res.status} ${typeof res.body === 'string' ? res.body : JSON.stringify(res.body ?? '')}`.slice(0, 240);\n\n/** Mot de passe jetable fort, jamais communiqué : l'utilisateur définit le sien (lien d'activation). */\nconst randomPassword = () => {\n  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789-_!@#%';\n  // Module « crypto » autorisé par NODE_FUNCTION_ALLOW_BUILTIN=crypto (docker-compose.yml)\n  const bytes = require('crypto').randomBytes(28);\n  return `${Array.from(bytes, (b) => alphabet[b % alphabet.length]).join('')}Aa9!`;\n};\n\n/** Événement d'étape attendu par l'API (POST /automation/events, signé par le sous-workflow). */\nconst stepEvent = (step, status, detail, meta = {}) => ({\n  json: { runId: ctx.runId, callbackUrl: ctx.callbackUrl, event: 'step', step, status, detail, meta },\n});\n\n// Gitea : compte (idempotent) et appartenance aux seules équipes prévues par le profil.\nconst GITEA = $env.GITEA_URL;\nconst ORG = $env.GITEA_ORG || 'tongapass';\nconst done = (status, detail, meta) => [stepEvent('gitea.account', status, detail, meta)];\n\nif (!GITEA) return done('SKIPPED', 'Gitea non configuré');\nif (!(access.giteaTeams || []).length) return done('SKIPPED', 'Le profil ne prévoit aucun accès Gitea (moindre privilège)');\n\nconst headers = { Authorization: `Basic ${btoa(`${$env.GITEA_ADMIN_USER}:${$env.GITEA_ADMIN_PASSWORD}`)}` };\nconst user = encodeURIComponent(employee.username);\n\ntry {\n  const created = await http({\n    method: 'POST',\n    url: `${GITEA}/api/v1/admin/users`,\n    headers,\n    body: {\n      username: employee.username,\n      email: employee.workEmail,\n      full_name: employee.fullName,\n      password: randomPassword(),\n      must_change_password: true,\n      send_notify: false,\n      visibility: 'private',\n    },\n  });\n  if (created.status === 422 || created.status === 409) {\n    const existing = await http({ method: 'GET', url: `${GITEA}/api/v1/users/${user}`, headers });\n    if (existing.status !== 200 || String(existing.body.email).toLowerCase() !== employee.workEmail.toLowerCase()) {\n      throw new Error(`l'identifiant « ${employee.username} » est déjà pris dans Gitea`);\n    }\n    // Réembauche : on réactive le compte existant.\n    await http({\n      method: 'PATCH',\n      url: `${GITEA}/api/v1/admin/users/${user}`,\n      headers,\n      body: { login_name: employee.username, source_id: 0, active: true, prohibit_login: false },\n    });\n  } else if (created.status !== 201) {\n    throw new Error(`création refusée (${describe(created)})`);\n  }\n\n  const teams = await http({ method: 'GET', url: `${GITEA}/api/v1/orgs/${ORG}/teams`, headers });\n  if (teams.status !== 200) throw new Error(`équipes de l'organisation illisibles (${describe(teams)})`);\n  const joined = [];\n  for (const name of access.giteaTeams) {\n    const team = teams.body.find((candidate) => candidate.name === name);\n    if (!team) throw new Error(`équipe « ${name} » introuvable`);\n    const added = await http({ method: 'PUT', url: `${GITEA}/api/v1/teams/${team.id}/members/${user}`, headers });\n    if (added.status >= 300) throw new Error(`ajout à l'équipe ${name} refusé (${describe(added)})`);\n    joined.push(name);\n  }\n  return done('SUCCEEDED', `Compte « ${employee.username} » · équipes : ${joined.join(', ')} · mot de passe via « Mot de passe oublié »`, {\n    username: employee.username,\n  });\n} catch (error) {\n  return done('FAILED', error.message);\n}"
+      },
+      "id": "a4b7bbce-f5e3-4ba0-a32d-0cccee9794ec",
+      "name": "Gitea · compte et équipes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        200
+      ],
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "tpCallback000001",
+          "mode": "id"
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "5a1ce7a3-e9dc-4489-a330-f12c7d4bd717",
+      "name": "Signaler · Gitea",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        1540,
+        200
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ---------------------------------------------------------------------------\n// Prélude commun injecté en tête de chaque nœud Code par build-workflows.mjs.\n// Il fournit : le contexte TongaPass, un client HTTP tolérant aux erreurs,\n// un générateur de mots de passe aléatoires et un constructeur d'événements.\n// ---------------------------------------------------------------------------\nconst ctx = $('Préparer le contexte').first().json;\nconst employee = ctx.employee;\nconst access = ctx.access || { realmRoles: [], groups: [], giteaTeams: [], chatChannels: [] };\nconst options = ctx.options || {};\n\n/** Appel HTTP qui ne lève pas d'exception sur les statuts 4xx/5xx. */\nconst http = async (request) => {\n  const response = await this.helpers.httpRequest({\n    json: true,\n    returnFullResponse: true,\n    ignoreHttpStatusErrors: true,\n    timeout: 15000,\n    ...request,\n  });\n  let body = response.body;\n  if (typeof body === 'string' && body.length) {\n    try {\n      body = JSON.parse(body);\n    } catch {\n      /* corps texte */\n    }\n  }\n  return { status: response.statusCode, body, headers: response.headers || {} };\n};\n\nconst describe = (res) =>\n  `HTTP ${res.status} ${typeof res.body === 'string' ? res.body : JSON.stringify(res.body ?? '')}`.slice(0, 240);\n\n/** Mot de passe jetable fort, jamais communiqué : l'utilisateur définit le sien (lien d'activation). */\nconst randomPassword = () => {\n  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789-_!@#%';\n  // Module « crypto » autorisé par NODE_FUNCTION_ALLOW_BUILTIN=crypto (docker-compose.yml)\n  const bytes = require('crypto').randomBytes(28);\n  return `${Array.from(bytes, (b) => alphabet[b % alphabet.length]).join('')}Aa9!`;\n};\n\n/** Événement d'étape attendu par l'API (POST /automation/events, signé par le sous-workflow). */\nconst stepEvent = (step, status, detail, meta = {}) => ({\n  json: { runId: ctx.runId, callbackUrl: ctx.callbackUrl, event: 'step', step, status, detail, meta },\n});\n\n// Session du compte de service Mattermost (jeton renvoyé dans l'en-tête « token »).\nconst MM = $env.MATTERMOST_URL;\nconst TEAM = $env.MATTERMOST_TEAM || 'tongapass';\n\nconst mattermostLogin = async () => {\n  const res = await http({\n    method: 'POST',\n    url: `${MM}/api/v4/users/login`,\n    body: { login_id: $env.MATTERMOST_ADMIN_USER, password: $env.MATTERMOST_ADMIN_PASSWORD },\n  });\n  const token = res.headers.token || res.headers.Token;\n  if (res.status !== 200 || !token) throw new Error(`connexion du compte de service refusée (${describe(res)})`);\n  return { Authorization: `Bearer ${token}` };\n};\n\n// Mattermost : compte, équipe, canaux du profil et annonce dans ~bienvenue.\nconst done = (status, detail, meta) => [stepEvent('chat.invite', status, detail, meta)];\nif ($env.CHAT_ENABLED !== 'true' || !MM) return done('SKIPPED', 'Messagerie d’équipe désactivée');\n\ntry {\n  const headers = await mattermostLogin();\n  const team = await http({ method: 'GET', url: `${MM}/api/v4/teams/name/${TEAM}`, headers });\n  if (team.status !== 200) throw new Error(`équipe « ${TEAM} » introuvable`);\n\n  let user;\n  const created = await http({\n    method: 'POST',\n    url: `${MM}/api/v4/users`,\n    headers,\n    body: {\n      email: employee.workEmail,\n      username: employee.username,\n      first_name: employee.firstName,\n      last_name: employee.lastName,\n      password: randomPassword(),\n      locale: 'fr',\n    },\n  });\n  if (created.status === 201) {\n    user = created.body;\n  } else {\n    const existing = await http({ method: 'GET', url: `${MM}/api/v4/users/username/${encodeURIComponent(employee.username)}`, headers });\n    if (existing.status !== 200 || String(existing.body.email).toLowerCase() !== employee.workEmail.toLowerCase()) {\n      throw new Error(`création refusée (${describe(created)})`);\n    }\n    user = existing.body;\n    if (user.delete_at > 0) await http({ method: 'PUT', url: `${MM}/api/v4/users/${user.id}/active`, headers, body: { active: true } });\n  }\n\n  const member = await http({\n    method: 'POST',\n    url: `${MM}/api/v4/teams/${team.body.id}/members`,\n    headers,\n    body: { team_id: team.body.id, user_id: user.id },\n  });\n  if (member.status >= 300) throw new Error(`ajout à l'équipe refusé (${describe(member)})`);\n\n  const joined = [];\n  const missing = [];\n  let welcomeChannelId = null;\n  for (const name of access.chatChannels || []) {\n    const channel = await http({ method: 'GET', url: `${MM}/api/v4/teams/${team.body.id}/channels/name/${name}`, headers });\n    if (channel.status !== 200) {\n      missing.push(name);\n      continue;\n    }\n    if (name === 'bienvenue') welcomeChannelId = channel.body.id;\n    if (name !== 'town-square') {\n      const added = await http({ method: 'POST', url: `${MM}/api/v4/channels/${channel.body.id}/members`, headers, body: { user_id: user.id } });\n      if (added.status >= 300) throw new Error(`ajout au canal ~${name} refusé (${describe(added)})`);\n    }\n    joined.push(`~${name}`);\n  }\n\n  if (options.announceInChat !== false && welcomeChannelId) {\n    const start = new Date(`${employee.startDate}T12:00:00`).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' });\n    await http({\n      method: 'POST',\n      url: `${MM}/api/v4/posts`,\n      headers,\n      body: {\n        channel_id: welcomeChannelId,\n        message: `:wave: **Tonga soa !** Bienvenue à **${employee.fullName}**, ${employee.jobTitle} (${employee.department}), qui nous rejoint le ${start}. Dites bonjour à @${employee.username} !`,\n      },\n    });\n  }\n\n  const missingText = missing.length ? ` · canaux absents : ${missing.join(', ')}` : '';\n  return done('SUCCEEDED', `Compte @${employee.username} · ${joined.join(', ')}${missingText}`, { userId: user.id });\n} catch (error) {\n  return done('FAILED', error.message);\n}"
+      },
+      "id": "152737c8-9223-4b05-a46d-e78e80570850",
+      "name": "Mattermost · invitation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        200
+      ],
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "tpCallback000001",
+          "mode": "id"
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "774d3751-2547-4875-a4c7-baf17ef58c33",
+      "name": "Signaler · Mattermost",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        1980,
+        200
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ---------------------------------------------------------------------------\n// Prélude commun injecté en tête de chaque nœud Code par build-workflows.mjs.\n// Il fournit : le contexte TongaPass, un client HTTP tolérant aux erreurs,\n// un générateur de mots de passe aléatoires et un constructeur d'événements.\n// ---------------------------------------------------------------------------\nconst ctx = $('Préparer le contexte').first().json;\nconst employee = ctx.employee;\nconst access = ctx.access || { realmRoles: [], groups: [], giteaTeams: [], chatChannels: [] };\nconst options = ctx.options || {};\n\n/** Appel HTTP qui ne lève pas d'exception sur les statuts 4xx/5xx. */\nconst http = async (request) => {\n  const response = await this.helpers.httpRequest({\n    json: true,\n    returnFullResponse: true,\n    ignoreHttpStatusErrors: true,\n    timeout: 15000,\n    ...request,\n  });\n  let body = response.body;\n  if (typeof body === 'string' && body.length) {\n    try {\n      body = JSON.parse(body);\n    } catch {\n      /* corps texte */\n    }\n  }\n  return { status: response.statusCode, body, headers: response.headers || {} };\n};\n\nconst describe = (res) =>\n  `HTTP ${res.status} ${typeof res.body === 'string' ? res.body : JSON.stringify(res.body ?? '')}`.slice(0, 240);\n\n/** Mot de passe jetable fort, jamais communiqué : l'utilisateur définit le sien (lien d'activation). */\nconst randomPassword = () => {\n  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789-_!@#%';\n  // Module « crypto » autorisé par NODE_FUNCTION_ALLOW_BUILTIN=crypto (docker-compose.yml)\n  const bytes = require('crypto').randomBytes(28);\n  return `${Array.from(bytes, (b) => alphabet[b % alphabet.length]).join('')}Aa9!`;\n};\n\n/** Événement d'étape attendu par l'API (POST /automation/events, signé par le sous-workflow). */\nconst stepEvent = (step, status, detail, meta = {}) => ({\n  json: { runId: ctx.runId, callbackUrl: ctx.callbackUrl, event: 'step', step, status, detail, meta },\n});\n\n// Gabarit e-mail commun « lagon » : fond clair, carte blanche à bordure fine, mot-symbole bicolore. Aucun émoji.\nconst escape = (value) =>\n  String(value ?? '').replace(/[&<>\"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' })[c]);\n\nconst emailLayout = ({ kicker, title, intro, body, footer }) => `<!doctype html>\n<html lang=\"fr\"><body style=\"margin:0;background:#f3f7f6;font-family:'Plus Jakarta Sans','Segoe UI',Arial,sans-serif;color:#112e32\">\n<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr><td align=\"center\" style=\"padding:32px 12px\">\n<table role=\"presentation\" width=\"600\" cellpadding=\"0\" cellspacing=\"0\" style=\"max-width:600px;background:#ffffff;border:1px solid #d8e4e0;border-radius:10px;overflow:hidden\">\n<tr><td style=\"height:4px;line-height:4px;font-size:0;background:#126756\">&nbsp;</td></tr>\n<tr><td style=\"padding:24px 32px 0\">\n  <div style=\"font-size:17px;font-weight:700;letter-spacing:-.01em;color:#112e32\">Tonga<span style=\"color:#126756\">Pass</span></div>\n</td></tr>\n<tr><td style=\"padding:24px 32px 8px\">\n  <div style=\"font-size:12px;color:#126756;letter-spacing:.02em\">${escape(kicker)}</div>\n  <div style=\"font-size:22px;font-weight:600;margin-top:6px;line-height:1.3\">${escape(title)}</div>\n  <p style=\"font-size:14px;line-height:1.6;color:#3d575c;margin:12px 0 0\">${escape(intro)}</p>\n</td></tr>\n<tr><td style=\"padding:16px 32px 28px\">${body}</td></tr>\n<tr><td style=\"padding:16px 32px;border-top:1px solid #d8e4e0;color:#126756;font-size:12px;line-height:1.5\">${escape(footer || 'Message envoyé automatiquement par TongaPass. Merci de ne pas y répondre.')}</td></tr>\n</table></td></tr></table></body></html>`;\n\nconst emailRows = (rows) =>\n  `<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"font-size:14px;border-collapse:collapse\">${rows\n    .map(\n      ([key, value]) =>\n        `<tr><td style=\"padding:9px 0;color:#126756;width:40%;border-bottom:1px solid #f3e8d6;vertical-align:top\">${escape(key)}</td><td style=\"padding:9px 0;font-weight:500;border-bottom:1px solid #f3e8d6\">${escape(value)}</td></tr>`,\n    )\n    .join('')}</table>`;\n\n// Compose l'e-mail de bienvenue (HTML + texte) envoyé à l'adresse personnelle.\nconst start = new Date(`${employee.startDate}T12:00:00`).toLocaleDateString('fr-FR', {\n  weekday: 'long',\n  day: 'numeric',\n  month: 'long',\n  year: 'numeric',\n});\nconst links = ctx.links || {};\nconst company = ctx.company?.name || 'TongaPass';\n\nconst tools = [\n  links.account\n    ? { name: 'Votre compte d’entreprise', url: links.account, hint: 'Définissez votre mot de passe grâce au lien d’activation reçu sur votre adresse professionnelle.' }\n    : null,\n  access.giteaTeams?.length && links.gitea\n    ? { name: 'Gitea, le code source', url: links.gitea, hint: `Équipes : ${access.giteaTeams.join(', ')}. Mot de passe à définir via « Mot de passe oublié ».` }\n    : null,\n  access.chatChannels?.length && links.mattermost\n    ? { name: 'Mattermost, la messagerie d’équipe', url: links.mattermost, hint: `Canaux : ${access.chatChannels.map((c) => `~${c}`).join(', ')}.` }\n    : null,\n].filter(Boolean);\n\nconst rows = [\n  ['Identifiant', employee.username],\n  ['Adresse professionnelle', employee.workEmail],\n  ['Poste', `${employee.jobTitle} · ${employee.department}`],\n  ['Date d’arrivée', start],\n  ['Manager', employee.managerName || '—'],\n];\n\nconst toolsHtml = tools\n  .map(\n    (t) =>\n      `<p style=\"margin:0 0 14px;font-size:14px;line-height:1.55\"><a href=\"${escape(t.url)}\" style=\"color:#3d5c78;font-weight:600;text-decoration:none\">${escape(t.name)}</a><br><span style=\"color:#126756\">${escape(t.hint)}</span></p>`,\n  )\n  .join('');\n\nconst html = emailLayout({\n  kicker: `Arrivée le ${start}`,\n  title: `Bienvenue chez ${company}, ${employee.firstName}`,\n  intro: 'Votre identité numérique est prête. Voici l’essentiel pour votre premier jour.',\n  body: `${emailRows(rows)}\n  <div style=\"font-size:15px;font-weight:600;margin:26px 0 12px\">Vos outils</div>\n  ${toolsHtml}\n  <p style=\"margin:20px 0 0;padding:12px 14px;border-left:3px solid #126756;background:#f3f7f6;font-size:13px;line-height:1.55;color:#3d575c\">\n    Aucun mot de passe ne vous est transmis par e-mail. Un lien d’activation valable 48 heures a été envoyé à ${escape(employee.workEmail)}.\n  </p>`,\n});\n\nconst text = [\n  `Bienvenue chez ${company}, ${employee.firstName}.`,\n  'Votre identité numérique est prête.',\n  '',\n  ...rows.map(([k, v]) => `${k} : ${v}`),\n  '',\n  'Vos outils :',\n  ...tools.map((t) => `- ${t.name} : ${t.url} (${t.hint})`),\n  '',\n  `Aucun mot de passe n'est transmis par e-mail : un lien d'activation valable 48 heures a été envoyé à ${employee.workEmail}.`,\n].join('\\n');\n\nreturn [\n  {\n    json: {\n      skip: options.sendWelcomeEmail === false,\n      to: employee.personalEmail,\n      subject: `Bienvenue chez ${company} : vos accès sont prêts`,\n      html,\n      text,\n    },\n  },\n];"
+      },
+      "id": "9d9a79e6-b183-4534-a72b-557979bb12d6",
+      "name": "Composer l’e-mail de bienvenue",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        200
+      ],
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "86bf0246-8e7f-41c7-a371-09b18178290a",
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "4c4c21f2-576a-4e45-a65c-f4c84b0fb68a",
+      "name": "E-mail demandé ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2420,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.MAIL_FROM }}",
+        "toEmail": "={{ $json.to }}",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "both",
+        "text": "={{ $json.text }}",
+        "html": "={{ $json.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "b0a43f4a-2ac5-43a0-a8a1-457b0f4eded3",
+      "name": "Envoyer l’e-mail de bienvenue",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        2640,
+        100
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "tpSmtpMailpit001",
+          "name": "TongaPass SMTP (Mailpit)"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ---------------------------------------------------------------------------\n// Prélude commun injecté en tête de chaque nœud Code par build-workflows.mjs.\n// Il fournit : le contexte TongaPass, un client HTTP tolérant aux erreurs,\n// un générateur de mots de passe aléatoires et un constructeur d'événements.\n// ---------------------------------------------------------------------------\nconst ctx = $('Préparer le contexte').first().json;\nconst employee = ctx.employee;\nconst access = ctx.access || { realmRoles: [], groups: [], giteaTeams: [], chatChannels: [] };\nconst options = ctx.options || {};\n\n/** Appel HTTP qui ne lève pas d'exception sur les statuts 4xx/5xx. */\nconst http = async (request) => {\n  const response = await this.helpers.httpRequest({\n    json: true,\n    returnFullResponse: true,\n    ignoreHttpStatusErrors: true,\n    timeout: 15000,\n    ...request,\n  });\n  let body = response.body;\n  if (typeof body === 'string' && body.length) {\n    try {\n      body = JSON.parse(body);\n    } catch {\n      /* corps texte */\n    }\n  }\n  return { status: response.statusCode, body, headers: response.headers || {} };\n};\n\nconst describe = (res) =>\n  `HTTP ${res.status} ${typeof res.body === 'string' ? res.body : JSON.stringify(res.body ?? '')}`.slice(0, 240);\n\n/** Mot de passe jetable fort, jamais communiqué : l'utilisateur définit le sien (lien d'activation). */\nconst randomPassword = () => {\n  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789-_!@#%';\n  // Module « crypto » autorisé par NODE_FUNCTION_ALLOW_BUILTIN=crypto (docker-compose.yml)\n  const bytes = require('crypto').randomBytes(28);\n  return `${Array.from(bytes, (b) => alphabet[b % alphabet.length]).join('')}Aa9!`;\n};\n\n/** Événement d'étape attendu par l'API (POST /automation/events, signé par le sous-workflow). */\nconst stepEvent = (step, status, detail, meta = {}) => ({\n  json: { runId: ctx.runId, callbackUrl: ctx.callbackUrl, event: 'step', step, status, detail, meta },\n});\n\n// Traduit le résultat du nœud « Send Email » en événement d'étape.\n// email.welcome est remplacé à la génération (email.welcome ou email.notify).\nconst result = $input.first().json;\nconst recipients = $('Composer l’e-mail de bienvenue').first().json.to;\nif (result.error) {\n  const message = typeof result.error === 'string' ? result.error : result.error.message || JSON.stringify(result.error);\n  return [stepEvent('email.welcome', 'FAILED', `envoi impossible : ${String(message).slice(0, 200)}`)];\n}\nreturn [stepEvent('email.welcome', 'SUCCEEDED', `E-mail envoyé à ${recipients}`, { messageId: String(result.messageId || '') })];"
+      },
+      "id": "8d024b41-058f-4b93-aaf7-9936ab850f88",
+      "name": "Résultat de l’envoi",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2860,
+        100
+      ],
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ---------------------------------------------------------------------------\n// Prélude commun injecté en tête de chaque nœud Code par build-workflows.mjs.\n// Il fournit : le contexte TongaPass, un client HTTP tolérant aux erreurs,\n// un générateur de mots de passe aléatoires et un constructeur d'événements.\n// ---------------------------------------------------------------------------\nconst ctx = $('Préparer le contexte').first().json;\nconst employee = ctx.employee;\nconst access = ctx.access || { realmRoles: [], groups: [], giteaTeams: [], chatChannels: [] };\nconst options = ctx.options || {};\n\n/** Appel HTTP qui ne lève pas d'exception sur les statuts 4xx/5xx. */\nconst http = async (request) => {\n  const response = await this.helpers.httpRequest({\n    json: true,\n    returnFullResponse: true,\n    ignoreHttpStatusErrors: true,\n    timeout: 15000,\n    ...request,\n  });\n  let body = response.body;\n  if (typeof body === 'string' && body.length) {\n    try {\n      body = JSON.parse(body);\n    } catch {\n      /* corps texte */\n    }\n  }\n  return { status: response.statusCode, body, headers: response.headers || {} };\n};\n\nconst describe = (res) =>\n  `HTTP ${res.status} ${typeof res.body === 'string' ? res.body : JSON.stringify(res.body ?? '')}`.slice(0, 240);\n\n/** Mot de passe jetable fort, jamais communiqué : l'utilisateur définit le sien (lien d'activation). */\nconst randomPassword = () => {\n  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789-_!@#%';\n  // Module « crypto » autorisé par NODE_FUNCTION_ALLOW_BUILTIN=crypto (docker-compose.yml)\n  const bytes = require('crypto').randomBytes(28);\n  return `${Array.from(bytes, (b) => alphabet[b % alphabet.length]).join('')}Aa9!`;\n};\n\n/** Événement d'étape attendu par l'API (POST /automation/events, signé par le sous-workflow). */\nconst stepEvent = (step, status, detail, meta = {}) => ({\n  json: { runId: ctx.runId, callbackUrl: ctx.callbackUrl, event: 'step', step, status, detail, meta },\n});\n\nreturn [stepEvent('email.welcome', 'SKIPPED', 'Envoi désactivé lors de la déclaration')];"
+      },
+      "id": "66d92463-c9e9-428b-aa10-e0ee1c787451",
+      "name": "E-mail non demandé",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2860,
+        300
+      ],
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "tpCallback000001",
+          "mode": "id"
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "571b575c-004b-4a37-aec6-bdee13207957",
+      "name": "Signaler · e-mail",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        3080,
+        200
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const ctx = $('Préparer le contexte').first().json;\nreturn [{ json: { runId: ctx.runId, callbackUrl: ctx.callbackUrl, event: 'run.finished', executionId: String($execution.id) } }];"
+      },
+      "id": "c665d3a2-05b9-490c-a5a2-eb5713f4b729",
+      "name": "Clôturer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3300,
+        300
+      ],
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "tpCallback000001",
+          "mode": "id"
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "102a27f1-e84f-4da5-a766-818ff62f4a6a",
+      "name": "Signaler · fin",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        3520,
+        300
+      ],
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Webhook TongaPass": {
+      "main": [
+        [
+          {
+            "node": "Accusé de réception",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Accusé de réception": {
+      "main": [
+        [
+          {
+            "node": "Préparer le contexte",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Préparer le contexte": {
+      "main": [
+        [
+          {
+            "node": "Keycloak · compte, rôles, activation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Keycloak · compte, rôles, activation": {
+      "main": [
+        [
+          {
+            "node": "Signaler · Keycloak",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signaler · Keycloak": {
+      "main": [
+        [
+          {
+            "node": "Compte Keycloak créé ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compte Keycloak créé ?": {
+      "main": [
+        [
+          {
+            "node": "Gitea · compte et équipes",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Clôturer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gitea · compte et équipes": {
+      "main": [
+        [
+          {
+            "node": "Signaler · Gitea",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signaler · Gitea": {
+      "main": [
+        [
+          {
+            "node": "Mattermost · invitation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mattermost · invitation": {
+      "main": [
+        [
+          {
+            "node": "Signaler · Mattermost",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signaler · Mattermost": {
+      "main": [
+        [
+          {
+            "node": "Composer l’e-mail de bienvenue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Composer l’e-mail de bienvenue": {
+      "main": [
+        [
+          {
+            "node": "E-mail demandé ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "E-mail demandé ?": {
+      "main": [
+        [
+          {
+            "node": "Envoyer l’e-mail de bienvenue",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "E-mail non demandé",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Envoyer l’e-mail de bienvenue": {
+      "main": [
+        [
+          {
+            "node": "Résultat de l’envoi",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Résultat de l’envoi": {
+      "main": [
+        [
+          {
+            "node": "Signaler · e-mail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "E-mail non demandé": {
+      "main": [
+        [
+          {
+            "node": "Signaler · e-mail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signaler · e-mail": {
+      "main": [
+        [
+          {
+            "node": "Clôturer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clôturer": {
+      "main": [
+        [
+          {
+            "node": "Signaler · fin",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "timezone": "Indian/Antananarivo"
+  },
+  "pinData": {}
+}

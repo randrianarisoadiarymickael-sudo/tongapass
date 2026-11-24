@@ -1,0 +1,436 @@
+@import 'tailwindcss';
+@import './landing.css';
+
+/* Thème sombre piloté par l'attribut data-theme sur <html> */
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+/* Couleurs de marque et d’état du portail. */
+@theme inline {
+  --font-sans: 'Plus Jakarta Sans Variable', 'Plus Jakarta Sans', ui-sans-serif, system-ui, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace;
+
+  --color-canvas: var(--tp-canvas);
+  --color-surface: var(--tp-surface);
+  --color-sunken: var(--tp-sunken);
+  --color-raised: var(--tp-raised);
+  --color-ink: var(--tp-ink);
+  --color-ink-2: var(--tp-ink-2);
+  --color-ink-3: var(--tp-ink-3);
+  --color-line: var(--tp-line);
+  --color-line-strong: var(--tp-line-strong);
+  --color-hover: var(--tp-hover);
+
+  --color-brand: var(--tp-brand);
+  --color-brand-strong: var(--tp-brand-strong);
+  --color-brand-soft: var(--tp-brand-soft);
+  --color-on-brand: var(--tp-on-brand);
+  --color-accent: var(--tp-accent);
+
+  --color-success: var(--tp-success);
+  --color-success-soft: var(--tp-success-soft);
+  --color-info: var(--tp-info);
+  --color-info-soft: var(--tp-info-soft);
+  --color-danger: var(--tp-danger);
+  --color-danger-strong: var(--tp-danger-strong);
+  --color-danger-soft: var(--tp-danger-soft);
+  --color-warning: var(--tp-warning);
+  --color-warning-soft: var(--tp-warning-soft);
+
+  --color-series-arrivals: var(--tp-series-arrivals);
+  --color-series-departures: var(--tp-series-departures);
+
+  --shadow-overlay: var(--tp-shadow-overlay);
+  --shadow-panel: var(--tp-shadow-panel);
+}
+
+/* Transitions de navigation, d'ouverture et de sélection. */
+:root {
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --duration-slow: 280ms;
+  --radius-panel: 12px;
+}
+
+:root {
+  color-scheme: light;
+  --tp-canvas: #f3f7f6;
+  --tp-surface: #ffffff;
+  --tp-sunken: #eaf2ef;
+  --tp-raised: #ffffff;
+  --tp-solid: #ffffff;
+  --tp-hover: rgb(17 62 55 / 0.07);
+  --tp-ink: #112e32;
+  --tp-ink-2: #3d575c;
+  --tp-ink-3: #50686b;
+  --tp-line: #d8e4e0;
+  --tp-line-strong: #9bb6af;
+  --tp-brand: #126756;
+  --tp-brand-strong: #0b5043;
+  --tp-brand-soft: #d9f1e8;
+  --tp-on-brand: #ffffff;
+  --tp-accent: #208970;
+  --tp-success: #17644d;
+  --tp-success-soft: #dff3e9;
+  --tp-info: #285a91;
+  --tp-info-soft: #e4effb;
+  --tp-danger: #a3303e;
+  --tp-danger-strong: #812331;
+  --tp-danger-soft: #fbe8ea;
+  --tp-warning: #82520e;
+  --tp-warning-soft: #faf0d9;
+  --tp-series-arrivals: #187760;
+  --tp-series-departures: #a36e3f;
+  --tp-shadow-panel: 0 1px 3px rgb(15 46 44 / .05), 0 8px 18px -16px rgb(15 46 44 / .2);
+  --tp-shadow-overlay: 0 18px 48px -12px rgb(10 43 40 / .26);
+}
+[data-theme='dark'] {
+  color-scheme: dark;
+  --tp-canvas: #0b191e;
+  --tp-surface: #11252b;
+  --tp-sunken: #0e2025;
+  --tp-raised: #183137;
+  --tp-solid: #183137;
+  --tp-hover: rgb(192 235 222 / .08);
+  --tp-ink: #eff9f5;
+  --tp-ink-2: #c3d9d6;
+  --tp-ink-3: #a1bcb9;
+  --tp-line: #2a4144;
+  --tp-line-strong: #4b696a;
+  --tp-brand: #94e8c9;
+  --tp-brand-strong: #bcf6e1;
+  --tp-brand-soft: #1b3e36;
+  --tp-on-brand: #0a3027;
+  --tp-accent: #6dd8ae;
+  --tp-success: #9be1bf;
+  --tp-success-soft: #193a31;
+  --tp-info: #a4c9fa;
+  --tp-info-soft: #1c3248;
+  --tp-danger: #ffacb4;
+  --tp-danger-strong: #ffc5cb;
+  --tp-danger-soft: #3e2930;
+  --tp-warning: #f2c87e;
+  --tp-warning-soft: #3b3222;
+  --tp-series-arrivals: #83dbba;
+  --tp-series-departures: #e7b482;
+  --tp-shadow-panel: 0 1px 2px #0003;
+  --tp-shadow-overlay: 0 18px 42px -12px #0009;
+}
+
+@layer base {
+  html {
+    /* La barre supérieure (64 px) ne masque jamais l'élément qui reçoit le focus */
+    scroll-padding-top: 5rem;
+    -webkit-text-size-adjust: 100%;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    background: var(--tp-canvas);
+  }
+  body {
+    @apply bg-canvas font-sans text-ink;
+    font-size: 1rem;
+    line-height: 1.5;
+  }
+  h1,
+  h2,
+  h3 {
+    @apply text-ink;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+  p {
+    text-wrap: pretty;
+  }
+  ::selection {
+    background: color-mix(in oklab, var(--tp-accent) 30%, transparent);
+  }
+  :focus-visible {
+    outline: 2px solid var(--tp-info);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+  button,
+  [role='button'],
+  a,
+  input,
+  select,
+  textarea,
+  label {
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+  /* Tailwind 4 rend aux boutons le curseur par défaut : tout ce qui se clique l'indique */
+  button:not(:disabled),
+  [role='button']:not([aria-disabled='true']),
+  [role='tab'],
+  [role='menuitem'],
+  [role='option'],
+  summary,
+  select:not(:disabled) {
+    cursor: pointer;
+  }
+  select {
+    background-color: var(--tp-surface);
+    color: var(--tp-ink);
+  }
+  option,
+  optgroup {
+    background-color: var(--tp-solid);
+    color: var(--tp-ink);
+  }
+  [id] {
+    scroll-margin-top: 5.5rem;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--tp-line-strong);
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer components {
+  /* Panneau : surface pleine, bordure fine, ombre à peine perceptible */
+  .panel {
+    background: var(--tp-surface);
+    border: 1px solid var(--tp-line);
+    box-shadow: var(--tp-shadow-panel);
+  }
+  /* Menus, fenêtres et notifications : au-dessus du contenu, ombre portée nette */
+  .panel-raised {
+    background: var(--tp-raised);
+    border: 1px solid var(--tp-line);
+    box-shadow: var(--tp-shadow-overlay);
+  }
+}
+
+@layer utilities {
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* Squelette de chargement : simple variation d'opacité (figée si animations réduites) */
+.skeleton {
+  background: var(--tp-hover);
+  animation: skeleton-pulse 1.6s ease-in-out infinite;
+}
+@keyframes skeleton-pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+/*
+ * Les fenêtres sont centrées par la propriété « translate » (Tailwind 4) : les images clés
+ * n'animent que l'écart, via « transform », pour ne pas doubler le décalage de centrage.
+ */
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .screen-enter, .step-enter {
+    animation: content-in var(--duration-slow) var(--ease-out);
+  }
+  .hero-copy {
+    animation: content-in 440ms var(--ease-out);
+  }
+  @keyframes content-in {
+    from { transform: translateY(6px); opacity: .82; }
+    to { transform: translateY(0); opacity: 1; }
+  }
+}
+
+.workspace-title { font-size: clamp(1.9rem, 3.2vw, 2.7rem); font-weight: 660; letter-spacing: -.05em; }
+.workspace-sidebar {
+  --tp-solid: #10262b;
+  --tp-ink: #f3fbf8;
+  --tp-ink-2: #d2e6e0;
+  --tp-ink-3: #a9c9c0;
+  --tp-brand: #acedd4;
+  --tp-brand-soft: #21453f;
+  --tp-hover: #1b3837;
+  --tp-line: #2d4648;
+  background: linear-gradient(168deg, #102e32, #0b1d24 75%);
+  color: var(--tp-ink);
+}
+.workspace-sidebar ul { padding-block: .2rem; }
+.workspace-sidebar li a { height: 2.55rem; }
+.workspace-sidebar li [aria-current='page'] { box-shadow: inset 0 0 0 1px #40665d; }
+.workspace-topbar { box-shadow: 0 1px 6px #10262b06; }
+.live-indicator { padding: .32rem .65rem; border-radius: 2rem; background: var(--tp-sunken); }
+.signal-stroke { opacity: 0; }
+.dashboard-intro { overflow: hidden; border: 1px solid #284b48; border-radius: 1rem; background: #112e33; color: #f6fdfb; }
+.dashboard-heading {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem;
+  padding: clamp(1.25rem, 2.6vw, 2.1rem);
+  background: linear-gradient(95deg, #112e33 12%, #112e33f0 47%, #112e334f), url('/seuil-lagon.webp') right 60% / cover;
+}
+.dashboard-heading h1 { margin-top: .2rem; font-weight: 640; color: #f4fffa; font-size: clamp(2rem, 3.2vw, 3rem); letter-spacing: -.055em; }
+.dashboard-heading p { font-size: .85rem; color: #c6e8db; }
+.dashboard-signal { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; padding: .65rem clamp(1.25rem, 2.6vw, 2.1rem); background: #0a2428; border-top: 1px solid #305052; color: #b8f0d7; font-size: .8125rem; font-weight: 600; }
+.dashboard-signal svg { width: 1.05rem; height: 1.05rem; }
+.dashboard-event { display: inline-flex; gap: .5rem; align-items: center; color: #d0dedb; font-weight: 450; padding-left: .7rem; border-left: 1px solid #51736f; }
+.dashboard-event time { font-variant-numeric: tabular-nums; }
+.dashboard-event a:hover { text-decoration: underline; }
+.metric-cell { overflow: hidden; border: 1px solid var(--tp-line); border-radius: .85rem; background: var(--tp-surface); box-shadow: var(--tp-shadow-panel); }
+.metric-cell:has(a):hover { border-color: var(--tp-accent); }
+.metric-icon { width: 1.15rem; height: 1.15rem; color: var(--tp-brand); }
+.metric-value { font-size: 1.95rem; letter-spacing: -.055em; font-weight: 650; line-height: 1.3; }
+.flow-packet { display: none; }
+.flow-list li { position: relative; padding-left: 1.2rem; }
+.flow-list li::before { content: ''; position: absolute; left: 0; top: .55em; width: .5rem; height: .5rem; border: 1.5px solid var(--tp-brand); border-radius: 50%; }
+.timeline-marker { transition: color 180ms, background-color 220ms, border-color 180ms; }
+@media (prefers-reduced-motion: no-preference) {
+  .signal-stroke { animation: signal-trace 1.35s ease-out; }
+  @keyframes signal-trace {
+    0% { opacity: 1; stroke-dasharray: 1; stroke-dashoffset: 1; }
+    55% { opacity: 1; stroke-dasharray: 1; stroke-dashoffset: 0; }
+    100% { opacity: 0; stroke-dasharray: 1; stroke-dashoffset: 0; }
+  }
+  .incoming-signal, .dashboard-event, .activity-entry, .metric-value { animation: content-in 280ms var(--ease-out); }
+  [data-step-state='RUNNING'] .timeline-marker { animation: receive-ring 1.3s ease-out infinite; }
+  [data-step-state='SUCCEEDED'] .timeline-marker svg { animation: check-in 260ms var(--ease-out); }
+  @keyframes check-in { from { transform: scale(.65); } }
+  @keyframes receive-ring { from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--tp-brand) 42%, transparent); } to { box-shadow: 0 0 0 6px transparent; } }
+  .flow-packet { display: inline; opacity: 0; animation: packet-travel 5s linear infinite; }
+  .flow-packet[data-edge='api-n8n'], .flow-list li:nth-child(2)::before { animation-delay: .85s; }
+  .flow-packet[data-edge^='n8n-'], .flow-list li:nth-child(3)::before { animation-delay: 1.7s; }
+  .flow-packet[data-edge='n8n-api'], .flow-list li:nth-child(4)::before { animation-delay: 2.55s; }
+  .flow-packet[data-edge='api-db'] { animation-delay: 3.4s; }
+  @keyframes packet-travel {
+    0% { opacity: 0; stroke-dashoffset: .09; }
+    1%, 15% { opacity: 1; }
+    17%, 100% { opacity: 0; stroke-dashoffset: -1.1; }
+  }
+  .flow-list li::before { animation: flow-stop 5s ease-out infinite; }
+  @keyframes flow-stop { 0%, 17% { background: var(--tp-brand); } 22%, 100% { background: transparent; } }
+  .architecture-flow[data-playing='false'] .flow-packet,
+  .architecture-flow[data-playing='false'] .flow-list li::before { animation-play-state: paused; }
+}
+
+@keyframes dialog-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+}
+
+@keyframes menu-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes drawer-in {
+  from {
+    transform: translateX(-16px);
+    opacity: 0;
+  }
+}
+
+/* Menus déroulants et fenêtres flottantes : apparition brève, fermeture plus rapide */
+[role='menu'][data-state='open'],
+[data-radix-popper-content-wrapper] > [role='dialog'][data-state='open'] {
+  animation: menu-in var(--duration-base) var(--ease-out);
+}
+[role='menu'][data-state='closed'],
+[data-radix-popper-content-wrapper] > [role='dialog'][data-state='closed'] {
+  animation: menu-out 90ms ease-in;
+}
+
+/* Point d'état « en cours » : clignement lent, sans onde ni halo */
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.live-dot {
+  display: inline-flex;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: currentColor;
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Notifications (sonner) : mêmes surfaces et bordures que le reste de l'interface */
+[data-sonner-toaster] {
+  --normal-bg: var(--tp-raised);
+  --normal-border: var(--tp-line);
+  --normal-text: var(--tp-ink);
+  --border-radius: 10px;
+  font-family: var(--font-sans);
+}
+[data-sonner-toast].tp-toast {
+  box-shadow: var(--tp-shadow-overlay);
+  font-size: 13px;
+}
+[data-sonner-toast].tp-toast [data-description] {
+  color: var(--tp-ink-3);
+}
+[data-sonner-toast].tp-toast[data-type='success'] [data-icon] {
+  color: var(--tp-success);
+}
+[data-sonner-toast].tp-toast[data-type='error'] [data-icon] {
+  color: var(--tp-danger);
+}
+[data-sonner-toast].tp-toast[data-type='warning'] [data-icon] {
+  color: var(--tp-warning);
+}
+[data-sonner-toast].tp-toast[data-type='info'] [data-icon] {
+  color: var(--tp-info);
+}

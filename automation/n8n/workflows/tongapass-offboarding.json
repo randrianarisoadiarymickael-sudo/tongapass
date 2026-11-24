@@ -1,0 +1,538 @@
+{
+  "id": "tpOffboarding001",
+  "name": "TongaPass · Départ (offboarding)",
+  "active": true,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "tongapass/offboarding",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "cb8daa83-98e6-446a-a5b2-18f54e0fc8e5",
+      "name": "Webhook TongaPass",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "77ba0d5a-b86b-4640-afb5-14b550797a82",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "tpWebhookAuth001",
+          "name": "TongaPass — jeton webhook"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ accepted: true, executionId: $execution.id }) }}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "id": "db50b4bd-a5ca-4b3b-ada2-622b71883375",
+      "name": "Accusé de réception",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Contrat d'entrée : voir automation/n8n/README.md\nconst body = $('Webhook TongaPass').first().json.body;\nif (!body || !body.runId || !body.employee || !body.employee.username) {\n  throw new Error('Charge utile TongaPass invalide');\n}\nreturn [{ json: body }];"
+      },
+      "id": "2ca3be01-65f2-430f-a88f-a220fd9adcb1",
+      "name": "Préparer le contexte",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ],
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ---------------------------------------------------------------------------\n// Prélude commun injecté en tête de chaque nœud Code par build-workflows.mjs.\n// Il fournit : le contexte TongaPass, un client HTTP tolérant aux erreurs,\n// un générateur de mots de passe aléatoires et un constructeur d'événements.\n// ---------------------------------------------------------------------------\nconst ctx = $('Préparer le contexte').first().json;\nconst employee = ctx.employee;\nconst access = ctx.access || { realmRoles: [], groups: [], giteaTeams: [], chatChannels: [] };\nconst options = ctx.options || {};\n\n/** Appel HTTP qui ne lève pas d'exception sur les statuts 4xx/5xx. */\nconst http = async (request) => {\n  const response = await this.helpers.httpRequest({\n    json: true,\n    returnFullResponse: true,\n    ignoreHttpStatusErrors: true,\n    timeout: 15000,\n    ...request,\n  });\n  let body = response.body;\n  if (typeof body === 'string' && body.length) {\n    try {\n      body = JSON.parse(body);\n    } catch {\n      /* corps texte */\n    }\n  }\n  return { status: response.statusCode, body, headers: response.headers || {} };\n};\n\nconst describe = (res) =>\n  `HTTP ${res.status} ${typeof res.body === 'string' ? res.body : JSON.stringify(res.body ?? '')}`.slice(0, 240);\n\n/** Mot de passe jetable fort, jamais communiqué : l'utilisateur définit le sien (lien d'activation). */\nconst randomPassword = () => {\n  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789-_!@#%';\n  // Module « crypto » autorisé par NODE_FUNCTION_ALLOW_BUILTIN=crypto (docker-compose.yml)\n  const bytes = require('crypto').randomBytes(28);\n  return `${Array.from(bytes, (b) => alphabet[b % alphabet.length]).join('')}Aa9!`;\n};\n\n/** Événement d'étape attendu par l'API (POST /automation/events, signé par le sous-workflow). */\nconst stepEvent = (step, status, detail, meta = {}) => ({\n  json: { runId: ctx.runId, callbackUrl: ctx.callbackUrl, event: 'step', step, status, detail, meta },\n});\n\n// Jeton du compte de service « tongapass-provisioner » (client_credentials, droits limités à la gestion des utilisateurs).\nconst KC = $env.KEYCLOAK_URL;\nconst REALM = $env.KEYCLOAK_REALM;\nconst ADMIN = `${KC}/admin/realms/${REALM}`;\n\nconst keycloakToken = async () => {\n  const form = [\n    'grant_type=client_credentials',\n    `client_id=${encodeURIComponent($env.KEYCLOAK_CLIENT_ID)}`,\n    `client_secret=${encodeURIComponent($env.KEYCLOAK_CLIENT_SECRET)}`,\n  ].join('&');\n  const res = await http({\n    method: 'POST',\n    url: `${KC}/realms/${REALM}/protocol/openid-connect/token`,\n    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },\n    body: form,\n  });\n  if (res.status !== 200 || !res.body?.access_token) {\n    throw new Error(`authentification du compte de service refusée (${describe(res)})`);\n  }\n  return res.body.access_token;\n};\n\nconst findKeycloakUser = async (headers) => {\n  if (employee.keycloakUserId) {\n    const byId = await http({ method: 'GET', url: `${ADMIN}/users/${employee.keycloakUserId}`, headers });\n    if (byId.status === 200) return byId.body;\n  }\n  const found = await http({ method: 'GET', url: `${ADMIN}/users`, qs: { username: employee.username, exact: 'true' }, headers });\n  return Array.isArray(found.body) && found.body.length ? found.body[0] : null;\n};\n\n// Keycloak : désactivation, révocation des sessions et consentements, retrait des rôles et groupes.\n// Sécurité : on poursuit la révocation même si une sous-étape échoue (ne jamais laisser d'accès résiduel).\nconst steps = ['keycloak.disable', 'keycloak.sessions', 'keycloak.roles'];\n\nlet token;\ntry {\n  token = await keycloakToken();\n} catch (error) {\n  return steps.map((step) => stepEvent(step, 'FAILED', `Keycloak injoignable : ${error.message}`));\n}\nconst headers = { Authorization: `Bearer ${token}` };\n\nconst user = await findKeycloakUser(headers);\nif (!user) return steps.map((step) => stepEvent(step, 'SKIPPED', 'Aucun compte Keycloak à révoquer'));\nconst results = [];\n\n// 1. Désactivation -------------------------------------------------------------\ntry {\n  const disabled = await http({ method: 'PUT', url: `${ADMIN}/users/${user.id}`, headers, body: { ...user, enabled: false } });\n  if (disabled.status >= 300) throw new Error(describe(disabled));\n  results.push(stepEvent('keycloak.disable', 'SUCCEEDED', `Compte « ${user.username} » désactivé : plus aucune connexion possible`, { userId: user.id }));\n} catch (error) {\n  results.push(stepEvent('keycloak.disable', 'FAILED', `désactivation impossible : ${error.message}`));\n}\n\n// 2. Sessions, jetons hors ligne et consentements --------------------------------\ntry {\n  const sessions = await http({ method: 'GET', url: `${ADMIN}/users/${user.id}/sessions`, headers });\n  const offline = await http({ method: 'GET', url: `${ADMIN}/users/${user.id}/consents`, headers });\n  const logout = await http({ method: 'POST', url: `${ADMIN}/users/${user.id}/logout`, headers });\n  if (logout.status >= 300) throw new Error(describe(logout));\n  let consents = 0;\n  for (const consent of Array.isArray(offline.body) ? offline.body : []) {\n    const revoked = await http({ method: 'DELETE', url: `${ADMIN}/users/${user.id}/consents/${encodeURIComponent(consent.clientId)}`, headers });\n    if (revoked.status < 300) consents += 1;\n  }\n  const count = Array.isArray(sessions.body) ? sessions.body.length : 0;\n  results.push(stepEvent('keycloak.sessions', 'SUCCEEDED', `${count} session(s) active(s) fermée(s), ${consents} consentement(s) révoqué(s)`, { sessions: count }));\n} catch (error) {\n  results.push(stepEvent('keycloak.sessions', 'FAILED', `révocation des sessions impossible : ${error.message}`));\n}\n\n// 3. Rôles et groupes -------------------------------------------------------------\ntry {\n  const mappings = await http({ method: 'GET', url: `${ADMIN}/users/${user.id}/role-mappings/realm`, headers });\n  const roles = (Array.isArray(mappings.body) ? mappings.body : []).filter((role) => !role.name.startsWith('default-roles-'));\n  if (roles.length) {\n    const removed = await http({ method: 'DELETE', url: `${ADMIN}/users/${user.id}/role-mappings/realm`, headers, body: roles });\n    if (removed.status >= 300) throw new Error(`retrait des rôles refusé (${describe(removed)})`);\n  }\n  const groups = await http({ method: 'GET', url: `${ADMIN}/users/${user.id}/groups`, headers });\n  const left = [];\n  for (const group of Array.isArray(groups.body) ? groups.body : []) {\n    const removed = await http({ method: 'DELETE', url: `${ADMIN}/users/${user.id}/groups/${group.id}`, headers });\n    if (removed.status >= 300) throw new Error(`retrait du groupe ${group.name} refusé (${describe(removed)})`);\n    left.push(group.name);\n  }\n  results.push(\n    stepEvent('keycloak.roles', 'SUCCEEDED', `Rôles retirés : ${roles.map((r) => r.name).join(', ') || 'aucun'} · groupes quittés : ${left.join(', ') || 'aucun'}`),\n  );\n} catch (error) {\n  results.push(stepEvent('keycloak.roles', 'FAILED', error.message));\n}\n\nreturn results;"
+      },
+      "id": "884a832b-957a-45a3-a931-a2864b2694aa",
+      "name": "Keycloak · révocation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        300
+      ],
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "tpCallback000001",
+          "mode": "id"
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "e5ed257b-c667-48f5-a970-43db9c716d83",
+      "name": "Signaler · Keycloak",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        880,
+        300
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ---------------------------------------------------------------------------\n// Prélude commun injecté en tête de chaque nœud Code par build-workflows.mjs.\n// Il fournit : le contexte TongaPass, un client HTTP tolérant aux erreurs,\n// un générateur de mots de passe aléatoires et un constructeur d'événements.\n// ---------------------------------------------------------------------------\nconst ctx = $('Préparer le contexte').first().json;\nconst employee = ctx.employee;\nconst access = ctx.access || { realmRoles: [], groups: [], giteaTeams: [], chatChannels: [] };\nconst options = ctx.options || {};\n\n/** Appel HTTP qui ne lève pas d'exception sur les statuts 4xx/5xx. */\nconst http = async (request) => {\n  const response = await this.helpers.httpRequest({\n    json: true,\n    returnFullResponse: true,\n    ignoreHttpStatusErrors: true,\n    timeout: 15000,\n    ...request,\n  });\n  let body = response.body;\n  if (typeof body === 'string' && body.length) {\n    try {\n      body = JSON.parse(body);\n    } catch {\n      /* corps texte */\n    }\n  }\n  return { status: response.statusCode, body, headers: response.headers || {} };\n};\n\nconst describe = (res) =>\n  `HTTP ${res.status} ${typeof res.body === 'string' ? res.body : JSON.stringify(res.body ?? '')}`.slice(0, 240);\n\n/** Mot de passe jetable fort, jamais communiqué : l'utilisateur définit le sien (lien d'activation). */\nconst randomPassword = () => {\n  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789-_!@#%';\n  // Module « crypto » autorisé par NODE_FUNCTION_ALLOW_BUILTIN=crypto (docker-compose.yml)\n  const bytes = require('crypto').randomBytes(28);\n  return `${Array.from(bytes, (b) => alphabet[b % alphabet.length]).join('')}Aa9!`;\n};\n\n/** Événement d'étape attendu par l'API (POST /automation/events, signé par le sous-workflow). */\nconst stepEvent = (step, status, detail, meta = {}) => ({\n  json: { runId: ctx.runId, callbackUrl: ctx.callbackUrl, event: 'step', step, status, detail, meta },\n});\n\n// Gitea : blocage de la connexion (jetons d'API compris) et retrait de toutes les équipes.\nconst GITEA = $env.GITEA_URL;\nconst ORG = $env.GITEA_ORG || 'tongapass';\nconst done = (status, detail) => [stepEvent('gitea.revoke', status, detail)];\nif (!GITEA) return done('SKIPPED', 'Gitea non configuré');\n\nconst headers = { Authorization: `Basic ${btoa(`${$env.GITEA_ADMIN_USER}:${$env.GITEA_ADMIN_PASSWORD}`)}` };\nconst username = employee.giteaUsername || employee.username;\nconst user = encodeURIComponent(username);\n\ntry {\n  const existing = await http({ method: 'GET', url: `${GITEA}/api/v1/users/${user}`, headers });\n  if (existing.status === 404) return done('SKIPPED', 'Aucun compte Gitea à révoquer');\n  if (existing.status !== 200) throw new Error(describe(existing));\n\n  const blocked = await http({\n    method: 'PATCH',\n    url: `${GITEA}/api/v1/admin/users/${user}`,\n    headers,\n    body: { login_name: username, source_id: 0, active: false, prohibit_login: true },\n  });\n  if (blocked.status >= 300) throw new Error(`blocage refusé (${describe(blocked)})`);\n\n  const teams = await http({ method: 'GET', url: `${GITEA}/api/v1/orgs/${ORG}/teams`, headers });\n  const left = [];\n  for (const team of Array.isArray(teams.body) ? teams.body : []) {\n    const member = await http({ method: 'GET', url: `${GITEA}/api/v1/teams/${team.id}/members/${user}`, headers });\n    if (member.status !== 200) continue;\n    const removed = await http({ method: 'DELETE', url: `${GITEA}/api/v1/teams/${team.id}/members/${user}`, headers });\n    if (removed.status >= 300) throw new Error(`retrait de l'équipe ${team.name} refusé (${describe(removed)})`);\n    left.push(team.name);\n  }\n  return done('SUCCEEDED', `Connexion bloquée pour « ${username} » · équipes quittées : ${left.join(', ') || 'aucune'}`);\n} catch (error) {\n  return done('FAILED', error.message);\n}"
+      },
+      "id": "22561e1e-f117-45df-af8c-6fb9c095dba6",
+      "name": "Gitea · blocage",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        300
+      ],
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "tpCallback000001",
+          "mode": "id"
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "d452ec76-f94a-488f-ae57-8fc5d55aff46",
+      "name": "Signaler · Gitea",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        1320,
+        300
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ---------------------------------------------------------------------------\n// Prélude commun injecté en tête de chaque nœud Code par build-workflows.mjs.\n// Il fournit : le contexte TongaPass, un client HTTP tolérant aux erreurs,\n// un générateur de mots de passe aléatoires et un constructeur d'événements.\n// ---------------------------------------------------------------------------\nconst ctx = $('Préparer le contexte').first().json;\nconst employee = ctx.employee;\nconst access = ctx.access || { realmRoles: [], groups: [], giteaTeams: [], chatChannels: [] };\nconst options = ctx.options || {};\n\n/** Appel HTTP qui ne lève pas d'exception sur les statuts 4xx/5xx. */\nconst http = async (request) => {\n  const response = await this.helpers.httpRequest({\n    json: true,\n    returnFullResponse: true,\n    ignoreHttpStatusErrors: true,\n    timeout: 15000,\n    ...request,\n  });\n  let body = response.body;\n  if (typeof body === 'string' && body.length) {\n    try {\n      body = JSON.parse(body);\n    } catch {\n      /* corps texte */\n    }\n  }\n  return { status: response.statusCode, body, headers: response.headers || {} };\n};\n\nconst describe = (res) =>\n  `HTTP ${res.status} ${typeof res.body === 'string' ? res.body : JSON.stringify(res.body ?? '')}`.slice(0, 240);\n\n/** Mot de passe jetable fort, jamais communiqué : l'utilisateur définit le sien (lien d'activation). */\nconst randomPassword = () => {\n  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789-_!@#%';\n  // Module « crypto » autorisé par NODE_FUNCTION_ALLOW_BUILTIN=crypto (docker-compose.yml)\n  const bytes = require('crypto').randomBytes(28);\n  return `${Array.from(bytes, (b) => alphabet[b % alphabet.length]).join('')}Aa9!`;\n};\n\n/** Événement d'étape attendu par l'API (POST /automation/events, signé par le sous-workflow). */\nconst stepEvent = (step, status, detail, meta = {}) => ({\n  json: { runId: ctx.runId, callbackUrl: ctx.callbackUrl, event: 'step', step, status, detail, meta },\n});\n\n// Session du compte de service Mattermost (jeton renvoyé dans l'en-tête « token »).\nconst MM = $env.MATTERMOST_URL;\nconst TEAM = $env.MATTERMOST_TEAM || 'tongapass';\n\nconst mattermostLogin = async () => {\n  const res = await http({\n    method: 'POST',\n    url: `${MM}/api/v4/users/login`,\n    body: { login_id: $env.MATTERMOST_ADMIN_USER, password: $env.MATTERMOST_ADMIN_PASSWORD },\n  });\n  const token = res.headers.token || res.headers.Token;\n  if (res.status !== 200 || !token) throw new Error(`connexion du compte de service refusée (${describe(res)})`);\n  return { Authorization: `Bearer ${token}` };\n};\n\n// Mattermost : fermeture de toutes les sessions puis désactivation du compte.\nconst done = (status, detail) => [stepEvent('chat.deactivate', status, detail)];\nif ($env.CHAT_ENABLED !== 'true' || !MM) return done('SKIPPED', 'Messagerie d’équipe désactivée');\n\ntry {\n  const headers = await mattermostLogin();\n  let userId = employee.chatUserId;\n  if (!userId) {\n    const found = await http({ method: 'GET', url: `${MM}/api/v4/users/username/${encodeURIComponent(employee.username)}`, headers });\n    if (found.status === 404) return done('SKIPPED', 'Aucun compte Mattermost à désactiver');\n    userId = found.body?.id;\n  }\n  const sessions = await http({ method: 'POST', url: `${MM}/api/v4/users/${userId}/sessions/revoke/all`, headers });\n  if (sessions.status >= 300 && sessions.status !== 404) throw new Error(`révocation des sessions refusée (${describe(sessions)})`);\n  const deactivated = await http({ method: 'DELETE', url: `${MM}/api/v4/users/${userId}`, headers });\n  if (deactivated.status >= 300) throw new Error(`désactivation refusée (${describe(deactivated)})`);\n  return done('SUCCEEDED', `Compte @${employee.username} désactivé, sessions fermées`);\n} catch (error) {\n  return done('FAILED', error.message);\n}"
+      },
+      "id": "b18624ba-f209-4ac5-a00b-7f17252cb061",
+      "name": "Mattermost · désactivation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        300
+      ],
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "tpCallback000001",
+          "mode": "id"
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "65c3bba5-826c-4657-af36-d443e88cf495",
+      "name": "Signaler · Mattermost",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        1760,
+        300
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ---------------------------------------------------------------------------\n// Prélude commun injecté en tête de chaque nœud Code par build-workflows.mjs.\n// Il fournit : le contexte TongaPass, un client HTTP tolérant aux erreurs,\n// un générateur de mots de passe aléatoires et un constructeur d'événements.\n// ---------------------------------------------------------------------------\nconst ctx = $('Préparer le contexte').first().json;\nconst employee = ctx.employee;\nconst access = ctx.access || { realmRoles: [], groups: [], giteaTeams: [], chatChannels: [] };\nconst options = ctx.options || {};\n\n/** Appel HTTP qui ne lève pas d'exception sur les statuts 4xx/5xx. */\nconst http = async (request) => {\n  const response = await this.helpers.httpRequest({\n    json: true,\n    returnFullResponse: true,\n    ignoreHttpStatusErrors: true,\n    timeout: 15000,\n    ...request,\n  });\n  let body = response.body;\n  if (typeof body === 'string' && body.length) {\n    try {\n      body = JSON.parse(body);\n    } catch {\n      /* corps texte */\n    }\n  }\n  return { status: response.statusCode, body, headers: response.headers || {} };\n};\n\nconst describe = (res) =>\n  `HTTP ${res.status} ${typeof res.body === 'string' ? res.body : JSON.stringify(res.body ?? '')}`.slice(0, 240);\n\n/** Mot de passe jetable fort, jamais communiqué : l'utilisateur définit le sien (lien d'activation). */\nconst randomPassword = () => {\n  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789-_!@#%';\n  // Module « crypto » autorisé par NODE_FUNCTION_ALLOW_BUILTIN=crypto (docker-compose.yml)\n  const bytes = require('crypto').randomBytes(28);\n  return `${Array.from(bytes, (b) => alphabet[b % alphabet.length]).join('')}Aa9!`;\n};\n\n/** Événement d'étape attendu par l'API (POST /automation/events, signé par le sous-workflow). */\nconst stepEvent = (step, status, detail, meta = {}) => ({\n  json: { runId: ctx.runId, callbackUrl: ctx.callbackUrl, event: 'step', step, status, detail, meta },\n});\n\n// Gabarit e-mail commun « lagon » : fond clair, carte blanche à bordure fine, mot-symbole bicolore. Aucun émoji.\nconst escape = (value) =>\n  String(value ?? '').replace(/[&<>\"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' })[c]);\n\nconst emailLayout = ({ kicker, title, intro, body, footer }) => `<!doctype html>\n<html lang=\"fr\"><body style=\"margin:0;background:#f3f7f6;font-family:'Plus Jakarta Sans','Segoe UI',Arial,sans-serif;color:#112e32\">\n<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr><td align=\"center\" style=\"padding:32px 12px\">\n<table role=\"presentation\" width=\"600\" cellpadding=\"0\" cellspacing=\"0\" style=\"max-width:600px;background:#ffffff;border:1px solid #d8e4e0;border-radius:10px;overflow:hidden\">\n<tr><td style=\"height:4px;line-height:4px;font-size:0;background:#126756\">&nbsp;</td></tr>\n<tr><td style=\"padding:24px 32px 0\">\n  <div style=\"font-size:17px;font-weight:700;letter-spacing:-.01em;color:#112e32\">Tonga<span style=\"color:#126756\">Pass</span></div>\n</td></tr>\n<tr><td style=\"padding:24px 32px 8px\">\n  <div style=\"font-size:12px;color:#126756;letter-spacing:.02em\">${escape(kicker)}</div>\n  <div style=\"font-size:22px;font-weight:600;margin-top:6px;line-height:1.3\">${escape(title)}</div>\n  <p style=\"font-size:14px;line-height:1.6;color:#3d575c;margin:12px 0 0\">${escape(intro)}</p>\n</td></tr>\n<tr><td style=\"padding:16px 32px 28px\">${body}</td></tr>\n<tr><td style=\"padding:16px 32px;border-top:1px solid #d8e4e0;color:#126756;font-size:12px;line-height:1.5\">${escape(footer || 'Message envoyé automatiquement par TongaPass. Merci de ne pas y répondre.')}</td></tr>\n</table></td></tr></table></body></html>`;\n\nconst emailRows = (rows) =>\n  `<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"font-size:14px;border-collapse:collapse\">${rows\n    .map(\n      ([key, value]) =>\n        `<tr><td style=\"padding:9px 0;color:#126756;width:40%;border-bottom:1px solid #f3e8d6;vertical-align:top\">${escape(key)}</td><td style=\"padding:9px 0;font-weight:500;border-bottom:1px solid #f3e8d6\">${escape(value)}</td></tr>`,\n    )\n    .join('')}</table>`;\n\n// Compose le récapitulatif de départ pour le manager et les RH (preuve de révocation).\nconst outcomes = [\n  ...$('Keycloak · révocation').all(),\n  ...$('Gitea · blocage').all(),\n  ...$('Mattermost · désactivation').all(),\n].map((item) => item.json);\n\nconst LABELS = {\n  'keycloak.disable': 'Compte Keycloak désactivé',\n  'keycloak.sessions': 'Sessions révoquées',\n  'keycloak.roles': 'Rôles et groupes retirés',\n  'gitea.revoke': 'Accès Gitea bloqué',\n  'chat.deactivate': 'Compte Mattermost désactivé',\n};\nconst STATUS = { SUCCEEDED: 'Fait', FAILED: 'Échec', SKIPPED: 'Non concerné' };\nconst COLOR = { SUCCEEDED: '#17644d', FAILED: '#a23a2a', SKIPPED: '#126756' };\nconst failures = outcomes.filter((o) => o.status === 'FAILED');\n\nconst recipients = [options.notifyManager !== false ? employee.managerEmail : null, $env.HR_NOTIFICATION_EMAIL]\n  .filter(Boolean)\n  .filter((value, index, all) => all.indexOf(value) === index);\n\nconst table = `<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"font-size:14px;border-collapse:collapse\">${outcomes\n  .map(\n    (o) =>\n      `<tr><td style=\"padding:10px 0;border-bottom:1px solid #f3e8d6;vertical-align:top\"><div style=\"font-weight:600\">${escape(LABELS[o.step] || o.step)}</div><div style=\"color:#126756;font-size:13px;margin-top:2px\">${escape(o.detail || '')}</div></td><td style=\"padding:10px 0;border-bottom:1px solid #f3e8d6;text-align:right;vertical-align:top;font-weight:600;color:${COLOR[o.status] || '#112e32'};white-space:nowrap\">${escape(STATUS[o.status] || o.status)}</td></tr>`,\n  )\n  .join('')}</table>`;\n\nconst html = emailLayout({\n  kicker: failures.length ? 'Départ — action requise' : 'Départ — accès révoqués',\n  title: `${employee.fullName} : récapitulatif de révocation`,\n  intro: `${employee.jobTitle} · ${employee.department}. Motif : ${ctx.reason || 'non précisé'}.`,\n  body: `${table}${\n    failures.length\n      ? `<p style=\"margin:18px 0 0;padding:12px 14px;border-left:3px solid #a23a2a;background:#f8e9e4;font-size:13px;line-height:1.55;color:#3d575c\">${failures.length} étape(s) en échec : relancez le workflow depuis TongaPass pour supprimer tout accès résiduel.</p>`\n      : ''\n  }`,\n  footer: 'Récapitulatif généré par TongaPass. La trace complète figure dans le journal d’audit.',\n});\n\nconst text = [\n  `Départ de ${employee.fullName} (${employee.jobTitle}, ${employee.department})`,\n  ...outcomes.map((o) => `- ${LABELS[o.step] || o.step} : ${STATUS[o.status] || o.status}. ${o.detail || ''}`),\n  failures.length ? `${failures.length} étape(s) en échec : relancez le workflow.` : 'Tous les accès ont été révoqués.',\n].join('\\n');\n\nreturn [\n  {\n    json: {\n      skip: recipients.length === 0,\n      to: recipients.join(', '),\n      subject: `${failures.length ? '[Action requise] ' : ''}Départ de ${employee.fullName} : récapitulatif des accès`,\n      html,\n      text,\n    },\n  },\n];"
+      },
+      "id": "43e98e4c-fecb-4502-a8b2-77bd792bacea",
+      "name": "Composer le récapitulatif",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        300
+      ],
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "3f2bae5d-f8df-4358-ac6d-9d08108780d8",
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "d0ec247c-6634-4884-a1a3-4202c42ae433",
+      "name": "Destinataires connus ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.MAIL_FROM }}",
+        "toEmail": "={{ $json.to }}",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "both",
+        "text": "={{ $json.text }}",
+        "html": "={{ $json.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "cdb9d340-7af8-4386-af26-7c5bb1a6cb64",
+      "name": "Envoyer le récapitulatif",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        2420,
+        200
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "tpSmtpMailpit001",
+          "name": "TongaPass SMTP (Mailpit)"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ---------------------------------------------------------------------------\n// Prélude commun injecté en tête de chaque nœud Code par build-workflows.mjs.\n// Il fournit : le contexte TongaPass, un client HTTP tolérant aux erreurs,\n// un générateur de mots de passe aléatoires et un constructeur d'événements.\n// ---------------------------------------------------------------------------\nconst ctx = $('Préparer le contexte').first().json;\nconst employee = ctx.employee;\nconst access = ctx.access || { realmRoles: [], groups: [], giteaTeams: [], chatChannels: [] };\nconst options = ctx.options || {};\n\n/** Appel HTTP qui ne lève pas d'exception sur les statuts 4xx/5xx. */\nconst http = async (request) => {\n  const response = await this.helpers.httpRequest({\n    json: true,\n    returnFullResponse: true,\n    ignoreHttpStatusErrors: true,\n    timeout: 15000,\n    ...request,\n  });\n  let body = response.body;\n  if (typeof body === 'string' && body.length) {\n    try {\n      body = JSON.parse(body);\n    } catch {\n      /* corps texte */\n    }\n  }\n  return { status: response.statusCode, body, headers: response.headers || {} };\n};\n\nconst describe = (res) =>\n  `HTTP ${res.status} ${typeof res.body === 'string' ? res.body : JSON.stringify(res.body ?? '')}`.slice(0, 240);\n\n/** Mot de passe jetable fort, jamais communiqué : l'utilisateur définit le sien (lien d'activation). */\nconst randomPassword = () => {\n  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789-_!@#%';\n  // Module « crypto » autorisé par NODE_FUNCTION_ALLOW_BUILTIN=crypto (docker-compose.yml)\n  const bytes = require('crypto').randomBytes(28);\n  return `${Array.from(bytes, (b) => alphabet[b % alphabet.length]).join('')}Aa9!`;\n};\n\n/** Événement d'étape attendu par l'API (POST /automation/events, signé par le sous-workflow). */\nconst stepEvent = (step, status, detail, meta = {}) => ({\n  json: { runId: ctx.runId, callbackUrl: ctx.callbackUrl, event: 'step', step, status, detail, meta },\n});\n\n// Traduit le résultat du nœud « Send Email » en événement d'étape.\n// email.notify est remplacé à la génération (email.welcome ou email.notify).\nconst result = $input.first().json;\nconst recipients = $('Composer le récapitulatif').first().json.to;\nif (result.error) {\n  const message = typeof result.error === 'string' ? result.error : result.error.message || JSON.stringify(result.error);\n  return [stepEvent('email.notify', 'FAILED', `envoi impossible : ${String(message).slice(0, 200)}`)];\n}\nreturn [stepEvent('email.notify', 'SUCCEEDED', `E-mail envoyé à ${recipients}`, { messageId: String(result.messageId || '') })];"
+      },
+      "id": "44439cf9-982f-4da6-a311-8ac308aae6df",
+      "name": "Résultat de l’envoi",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2640,
+        200
+      ],
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ---------------------------------------------------------------------------\n// Prélude commun injecté en tête de chaque nœud Code par build-workflows.mjs.\n// Il fournit : le contexte TongaPass, un client HTTP tolérant aux erreurs,\n// un générateur de mots de passe aléatoires et un constructeur d'événements.\n// ---------------------------------------------------------------------------\nconst ctx = $('Préparer le contexte').first().json;\nconst employee = ctx.employee;\nconst access = ctx.access || { realmRoles: [], groups: [], giteaTeams: [], chatChannels: [] };\nconst options = ctx.options || {};\n\n/** Appel HTTP qui ne lève pas d'exception sur les statuts 4xx/5xx. */\nconst http = async (request) => {\n  const response = await this.helpers.httpRequest({\n    json: true,\n    returnFullResponse: true,\n    ignoreHttpStatusErrors: true,\n    timeout: 15000,\n    ...request,\n  });\n  let body = response.body;\n  if (typeof body === 'string' && body.length) {\n    try {\n      body = JSON.parse(body);\n    } catch {\n      /* corps texte */\n    }\n  }\n  return { status: response.statusCode, body, headers: response.headers || {} };\n};\n\nconst describe = (res) =>\n  `HTTP ${res.status} ${typeof res.body === 'string' ? res.body : JSON.stringify(res.body ?? '')}`.slice(0, 240);\n\n/** Mot de passe jetable fort, jamais communiqué : l'utilisateur définit le sien (lien d'activation). */\nconst randomPassword = () => {\n  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789-_!@#%';\n  // Module « crypto » autorisé par NODE_FUNCTION_ALLOW_BUILTIN=crypto (docker-compose.yml)\n  const bytes = require('crypto').randomBytes(28);\n  return `${Array.from(bytes, (b) => alphabet[b % alphabet.length]).join('')}Aa9!`;\n};\n\n/** Événement d'étape attendu par l'API (POST /automation/events, signé par le sous-workflow). */\nconst stepEvent = (step, status, detail, meta = {}) => ({\n  json: { runId: ctx.runId, callbackUrl: ctx.callbackUrl, event: 'step', step, status, detail, meta },\n});\n\nreturn [stepEvent('email.notify', 'SKIPPED', 'Aucun manager ni adresse RH à notifier')];"
+      },
+      "id": "a7abc234-60d5-44f7-a55c-f86cad14045c",
+      "name": "Aucun destinataire",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2640,
+        400
+      ],
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "tpCallback000001",
+          "mode": "id"
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "5888443a-deb5-407a-a867-edfa0808b0c2",
+      "name": "Signaler · e-mail",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        2860,
+        300
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const ctx = $('Préparer le contexte').first().json;\nreturn [{ json: { runId: ctx.runId, callbackUrl: ctx.callbackUrl, event: 'run.finished', executionId: String($execution.id) } }];"
+      },
+      "id": "2eeb2004-231e-4ce0-a576-a9a04aef6aee",
+      "name": "Clôturer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3080,
+        300
+      ],
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "tpCallback000001",
+          "mode": "id"
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "0ca2cabb-7dcc-467c-a9df-2d5ee7f0e39c",
+      "name": "Signaler · fin",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        3300,
+        300
+      ],
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Webhook TongaPass": {
+      "main": [
+        [
+          {
+            "node": "Accusé de réception",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Accusé de réception": {
+      "main": [
+        [
+          {
+            "node": "Préparer le contexte",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Préparer le contexte": {
+      "main": [
+        [
+          {
+            "node": "Keycloak · révocation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Keycloak · révocation": {
+      "main": [
+        [
+          {
+            "node": "Signaler · Keycloak",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signaler · Keycloak": {
+      "main": [
+        [
+          {
+            "node": "Gitea · blocage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gitea · blocage": {
+      "main": [
+        [
+          {
+            "node": "Signaler · Gitea",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signaler · Gitea": {
+      "main": [
+        [
+          {
+            "node": "Mattermost · désactivation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mattermost · désactivation": {
+      "main": [
+        [
+          {
+            "node": "Signaler · Mattermost",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signaler · Mattermost": {
+      "main": [
+        [
+          {
+            "node": "Composer le récapitulatif",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Composer le récapitulatif": {
+      "main": [
+        [
+          {
+            "node": "Destinataires connus ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Destinataires connus ?": {
+      "main": [
+        [
+          {
+            "node": "Envoyer le récapitulatif",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Aucun destinataire",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Envoyer le récapitulatif": {
+      "main": [
+        [
+          {
+            "node": "Résultat de l’envoi",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Résultat de l’envoi": {
+      "main": [
+        [
+          {
+            "node": "Signaler · e-mail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aucun destinataire": {
+      "main": [
+        [
+          {
+            "node": "Signaler · e-mail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signaler · e-mail": {
+      "main": [
+        [
+          {
+            "node": "Clôturer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clôturer": {
+      "main": [
+        [
+          {
+            "node": "Signaler · fin",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "timezone": "Indian/Antananarivo"
+  },
+  "pinData": {}
+}

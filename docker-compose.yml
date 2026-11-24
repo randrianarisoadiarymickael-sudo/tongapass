@@ -1,0 +1,366 @@
+# TongaPass — pile complète de démonstration
+# 1. node scripts/init-env.mjs   (génère .env avec des secrets aléatoires)
+# 2. docker compose up -d --build
+# Tous les ports sont liés à 127.0.0.1 : rien n'est exposé sur le réseau local.
+
+name: tongapass
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+x-hardening: &hardening
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+  logging: *logging
+
+services:
+  # ---------------------------------------------------------------- données
+  postgres:
+    <<: *hardening
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?Lancez node scripts/init-env.mjs}
+      TP_DB_USER: tongapass
+      TP_DB_PASSWORD: ${TP_DB_PASSWORD:?}
+      KEYCLOAK_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?}
+      N8N_DB_PASSWORD: ${N8N_DB_PASSWORD:?}
+      GITEA_DB_PASSWORD: ${GITEA_DB_PASSWORD:?}
+      MATTERMOST_DB_PASSWORD: ${MATTERMOST_DB_PASSWORD:?}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    ports: ["127.0.0.1:5434:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d tongapass"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [backend]
+
+  mailpit:
+    <<: *hardening
+    image: axllent/mailpit:v1.34
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
+      MP_MAX_MESSAGES: "1000"
+      MP_DISABLE_VERSION_CHECK: "true"
+      TZ: Indian/Antananarivo
+    ports: ["127.0.0.1:8025:8025"]
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks: [backend]
+
+  # ---------------------------------------------------------------- identité
+  keycloak:
+    <<: *hardening
+    image: quay.io/keycloak/keycloak:26.8
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+      KC_HOSTNAME: ${KEYCLOAK_PUBLIC_URL:-http://localhost:8180}
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HTTP_ENABLED: "true"
+      KC_HEALTH_ENABLED: "true"
+      KC_LOG_LEVEL: info
+      # Valeurs injectées dans realm-tongapass.json (placeholders ${...})
+      TP_PROVISIONER_SECRET: ${TP_PROVISIONER_SECRET:?}
+      TP_AUDITOR_SECRET: ${TP_AUDITOR_SECRET:?Relancez node scripts/init-env.mjs --force ou ajoutez TP_AUDITOR_SECRET}
+      TP_DEMO_PASSWORD: ${TP_DEMO_PASSWORD:?}
+      TP_PORTAL_URL: ${PORTAL_URL:-http://localhost:8088}
+      KC_SMTP_HOST: mailpit
+      KC_SMTP_PORT: "1025"
+    volumes:
+      - ./infra/keycloak/realm-tongapass.json:/opt/keycloak/data/import/realm-tongapass.json:ro
+      - ./infra/keycloak/themes/tongapass:/opt/keycloak/themes/tongapass:ro
+    ports: ["127.0.0.1:8180:8080"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      mailpit: { condition: service_healthy }
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/9000 &&
+          printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          grep -q '"UP"' <&3
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    networks: [backend]
+
+  # ---------------------------------------------------------------- outils provisionnés
+  gitea:
+    <<: *hardening
+    image: gitea/gitea:latest-rootless
+    command: ["/bin/sh", "/opt/tongapass/start.sh"]
+    environment:
+      GITEA_ADMIN_USER: ${GITEA_ADMIN_USER:-tp-provisioner}
+      GITEA_ADMIN_PASSWORD: ${GITEA_ADMIN_PASSWORD:?}
+      GITEA__database__DB_TYPE: postgres
+      GITEA__database__HOST: postgres:5432
+      GITEA__database__NAME: gitea
+      GITEA__database__USER: gitea
+      GITEA__database__PASSWD: ${GITEA_DB_PASSWORD}
+      GITEA__security__INSTALL_LOCK: "true"
+      GITEA__security__SECRET_KEY: ${GITEA_SECRET_KEY:?}
+      GITEA__server__ROOT_URL: ${GITEA_PUBLIC_URL:-http://localhost:3300}/
+      GITEA__server__HTTP_PORT: "3000"
+      GITEA__server__DISABLE_SSH: "true"
+      GITEA__service__DISABLE_REGISTRATION: "true"
+      GITEA__service__REQUIRE_SIGNIN_VIEW: "true"
+      GITEA__repository__DEFAULT_PRIVATE: private
+      GITEA__mailer__ENABLED: "true"
+      GITEA__mailer__PROTOCOL: smtp
+      GITEA__mailer__SMTP_ADDR: mailpit
+      GITEA__mailer__SMTP_PORT: "1025"
+      GITEA__mailer__FROM: Gitea TongaPass <gitea@tongapass.local>
+      GITEA__log__LEVEL: Warn
+    volumes:
+      - gitea-data:/var/lib/gitea
+      - gitea-config:/etc/gitea
+      - ./infra/gitea/start.sh:/opt/tongapass/start.sh:ro
+    ports: ["127.0.0.1:3300:3000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+    networks: [backend]
+
+  mattermost:
+    <<: *hardening
+    image: mattermost/mattermost-team-edition:latest
+    profiles: [chat]
+    environment:
+      TZ: Indian/Antananarivo
+      MM_SQLSETTINGS_DRIVERNAME: postgres
+      MM_SQLSETTINGS_DATASOURCE: postgres://mattermost:${MATTERMOST_DB_PASSWORD}@postgres:5432/mattermost?sslmode=disable&connect_timeout=10
+      MM_SERVICESETTINGS_SITEURL: ${MATTERMOST_PUBLIC_URL:-http://localhost:8065}
+      # Mode local : socket Unix interne au conteneur, utilisé uniquement par le healthcheck
+      MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
+      MM_SERVICESETTINGS_ENABLEINCOMINGWEBHOOKS: "true"
+      MM_TEAMSETTINGS_ENABLEOPENSERVER: "false"
+      MM_EMAILSETTINGS_SMTPSERVER: mailpit
+      MM_EMAILSETTINGS_SMTPPORT: "1025"
+      MM_EMAILSETTINGS_FEEDBACKEMAIL: mattermost@tongapass.local
+      MM_EMAILSETTINGS_SENDEMAILNOTIFICATIONS: "false"
+      MM_EMAILSETTINGS_REQUIREEMAILVERIFICATION: "false"
+      MM_LOGSETTINGS_CONSOLELEVEL: WARN
+      MM_PLUGINSETTINGS_ENABLEUPLOADS: "false"
+    volumes:
+      - mm-data:/mattermost/data
+      - mm-config:/mattermost/config
+      - mm-logs:/mattermost/logs
+      - mm-plugins:/mattermost/plugins
+    ports: ["127.0.0.1:8065:8065"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    healthcheck:
+      # Image distroless (ni sh ni curl) : mmctl en mode local
+      test: ["CMD", "/mattermost/bin/mmctl", "--local", "system", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 40
+      start_period: 30s
+    networks: [backend]
+
+  # ---------------------------------------------------------------- automatisation
+  n8n:
+    <<: *hardening
+    image: n8nio/n8n:latest
+    entrypoint: ["tini", "--", "/bin/sh", "/opt/tongapass/entrypoint.sh"]
+    environment:
+      TZ: Indian/Antananarivo
+      GENERIC_TIMEZONE: Indian/Antananarivo
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_DATABASE: n8n
+      DB_POSTGRESDB_USER: n8n
+      DB_POSTGRESDB_PASSWORD: ${N8N_DB_PASSWORD}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?}
+      N8N_HOST: localhost
+      N8N_PORT: "5678"
+      N8N_PROTOCOL: http
+      N8N_WEBHOOK_URL: ${N8N_PUBLIC_URL:-http://localhost:5678}/
+      N8N_EDITOR_BASE_URL: ${N8N_PUBLIC_URL:-http://localhost:5678}
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      N8N_SECURE_COOKIE: "false"
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      NODE_FUNCTION_ALLOW_BUILTIN: crypto
+      N8N_RUNNERS_ENABLED: "true"
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+      N8N_DEFAULT_LOCALE: fr
+      EXECUTIONS_DATA_PRUNE: "true"
+      EXECUTIONS_DATA_MAX_AGE: "336"
+      # --- Contrat d'intégration TongaPass (lu par les workflows via $env) ---
+      N8N_WEBHOOK_TOKEN: ${N8N_WEBHOOK_TOKEN:?}
+      AUTOMATION_HMAC_SECRET: ${AUTOMATION_HMAC_SECRET:?}
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_REALM: tongapass
+      KEYCLOAK_CLIENT_ID: tongapass-provisioner
+      KEYCLOAK_CLIENT_SECRET: ${TP_PROVISIONER_SECRET}
+      KEYCLOAK_PUBLIC_URL: ${KEYCLOAK_PUBLIC_URL:-http://localhost:8180}
+      TP_ASSIGNABLE_ROLES: employee,developer,devops,people-ops,finance,support,intern
+      GITEA_URL: http://gitea:3000
+      GITEA_PUBLIC_URL: ${GITEA_PUBLIC_URL:-http://localhost:3300}
+      GITEA_ORG: tongapass
+      GITEA_ADMIN_USER: ${GITEA_ADMIN_USER:-tp-provisioner}
+      GITEA_ADMIN_PASSWORD: ${GITEA_ADMIN_PASSWORD}
+      CHAT_ENABLED: ${CHAT_ENABLED:-true}
+      MATTERMOST_URL: http://mattermost:8065
+      MATTERMOST_PUBLIC_URL: ${MATTERMOST_PUBLIC_URL:-http://localhost:8065}
+      MATTERMOST_TEAM: tongapass
+      MATTERMOST_ADMIN_USER: ${MATTERMOST_ADMIN_USER:-tp-provisioner}
+      MATTERMOST_ADMIN_PASSWORD: ${MATTERMOST_ADMIN_PASSWORD}
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      MAIL_FROM: ${MAIL_FROM:-TongaPass <bienvenue@tongapass.local>}
+      HR_NOTIFICATION_EMAIL: ${HR_NOTIFICATION_EMAIL:-rh@tongapass.local}
+      COMPANY_NAME: ${COMPANY_NAME:-TongaPass}
+    volumes:
+      - n8n-data:/home/node/.n8n
+      - ./automation/n8n:/opt/tongapass:ro
+    ports: ["127.0.0.1:5678:5678"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:5678/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    networks: [backend]
+
+  bootstrap:
+    image: node:24-alpine
+    restart: "no"
+    working_dir: /opt/bootstrap
+    command: ["node", "bootstrap.mjs"]
+    environment:
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_REALM: tongapass
+      KEYCLOAK_ADMIN_USER: admin
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      TP_AUDITOR_SECRET: ${TP_AUDITOR_SECRET}
+      GITEA_URL: http://gitea:3000
+      GITEA_ORG: tongapass
+      GITEA_ADMIN_USER: ${GITEA_ADMIN_USER:-tp-provisioner}
+      GITEA_ADMIN_PASSWORD: ${GITEA_ADMIN_PASSWORD}
+      CHAT_ENABLED: ${CHAT_ENABLED:-true}
+      MATTERMOST_URL: http://mattermost:8065
+      MATTERMOST_TEAM: tongapass
+      MATTERMOST_ADMIN_USER: ${MATTERMOST_ADMIN_USER:-tp-provisioner}
+      MATTERMOST_ADMIN_PASSWORD: ${MATTERMOST_ADMIN_PASSWORD}
+      N8N_URL: http://n8n:5678
+      N8N_OWNER_EMAIL: ${N8N_OWNER_EMAIL:-admin@tongapass.local}
+      N8N_OWNER_PASSWORD: ${N8N_OWNER_PASSWORD}
+    volumes:
+      - ./infra/bootstrap:/opt/bootstrap:ro
+    depends_on:
+      keycloak: { condition: service_healthy }
+      gitea: { condition: service_healthy }
+      n8n: { condition: service_healthy }
+    networks: [backend]
+
+  # ---------------------------------------------------------------- application
+  api:
+    <<: *hardening
+    init: true
+    build: { context: ./apps/api }
+    image: tongapass/api:local
+    read_only: true
+    tmpfs: ["/tmp"]
+    environment:
+      NODE_ENV: production
+      PORT: "4100"
+      LOG_LEVEL: info
+      CORS_ORIGINS: ${PORTAL_URL:-http://localhost:8088},http://localhost:5173
+      PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:4100}
+      PORTAL_URL: ${PORTAL_URL:-http://localhost:8088}
+      DATABASE_HOST: postgres
+      DATABASE_PORT: "5432"
+      DATABASE_USER: tongapass
+      DATABASE_PASSWORD: ${TP_DB_PASSWORD}
+      DATABASE_NAME: tongapass
+      KEYCLOAK_ISSUER: ${KEYCLOAK_PUBLIC_URL:-http://localhost:8180}/realms/tongapass
+      KEYCLOAK_JWKS_URI: http://keycloak:8080/realms/tongapass/protocol/openid-connect/certs
+      KEYCLOAK_INTERNAL_URL: http://keycloak:8080
+      KEYCLOAK_AUDIENCE: tongapass-api
+      KEYCLOAK_AUDITOR_CLIENT_ID: tongapass-auditor
+      KEYCLOAK_AUDITOR_SECRET: ${TP_AUDITOR_SECRET}
+      COMPANY_TIMEZONE_OFFSET: "+03:00"
+      COMPANY_TIMEZONE: Indian/Antananarivo
+      N8N_BASE_URL: http://n8n:5678
+      N8N_WEBHOOK_TOKEN: ${N8N_WEBHOOK_TOKEN}
+      AUTOMATION_HMAC_SECRET: ${AUTOMATION_HMAC_SECRET}
+      AUTOMATION_CALLBACK_URL: http://api:4100/api/v1/automation/events
+      COMPANY_NAME: ${COMPANY_NAME:-TongaPass}
+      COMPANY_EMAIL_DOMAIN: ${COMPANY_EMAIL_DOMAIN:-tongapass.local}
+      GITEA_URL: http://gitea:3000
+      MATTERMOST_URL: ${MATTERMOST_INTERNAL_URL-http://mattermost:8065}
+      MAILPIT_URL: http://mailpit:8025
+      N8N_PUBLIC_URL: ${N8N_PUBLIC_URL:-http://localhost:5678}
+      GITEA_PUBLIC_URL: ${GITEA_PUBLIC_URL:-http://localhost:3300}
+      MATTERMOST_PUBLIC_URL: ${MATTERMOST_PUBLIC_URL:-http://localhost:8065}
+      MAILPIT_PUBLIC_URL: ${MAILPIT_PUBLIC_URL:-http://localhost:8025}
+      KEYCLOAK_PUBLIC_URL: ${KEYCLOAK_PUBLIC_URL:-http://localhost:8180}
+    ports: ["127.0.0.1:4100:4100"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      keycloak: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4100/api/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    networks: [backend, frontend]
+
+  portal:
+    <<: *hardening
+    build:
+      context: ./apps/portal
+      args:
+        VITE_KEYCLOAK_URL: ${KEYCLOAK_PUBLIC_URL:-http://localhost:8180}
+        VITE_API_URL: /api/v1
+    image: tongapass/portal:local
+    read_only: true
+    tmpfs: ["/tmp", "/var/cache/nginx", "/var/run"]
+    ports: ["127.0.0.1:8088:8080"]
+    depends_on:
+      api: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks: [frontend]
+
+networks:
+  backend:
+  frontend:
+
+volumes:
+  pgdata:
+  n8n-data:
+  gitea-data:
+  gitea-config:
+  mm-data:
+  mm-config:
+  mm-logs:
+  mm-plugins:

@@ -1,0 +1,19 @@
+{
+  "name": "tongapass",
+  "version": "1.0.0",
+  "private": true,
+  "description": "TongaPass — arrivées et départs des employés automatisés avec n8n et Keycloak (projet P03, ESTI L3)",
+  "license": "MIT",
+  "scripts": {
+    "setup": "node scripts/init-env.mjs",
+    "stack:up": "docker compose up -d --build",
+    "stack:down": "docker compose down",
+    "stack:logs": "docker compose logs -f --tail=100",
+    "workflows:build": "node automation/n8n/build-workflows.mjs",
+    "test:api": "npm --prefix apps/api test && npm --prefix apps/api run test:e2e",
+    "test:portal": "npm --prefix apps/portal test",
+    "test:e2e": "npm --prefix e2e test",
+    "test:stack": "npm --prefix e2e run test:stack"
+  },
+  "engines": { "node": ">=22.12" }
+}
