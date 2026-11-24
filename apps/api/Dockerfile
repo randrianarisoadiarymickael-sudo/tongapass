@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # ---- dépendances ----
-FROM node:24-alpine AS deps
+FROM node:26-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
@@ -12,7 +12,7 @@ COPY src ./src
 RUN npm run build && npm prune --omit=dev
 
 # ---- exécution : image minimale, utilisateur non root ----
-FROM node:24-alpine AS runtime
+FROM node:26-alpine AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
