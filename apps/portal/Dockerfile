@@ -11,7 +11,7 @@ ENV VITE_KEYCLOAK_URL=${VITE_KEYCLOAK_URL} VITE_API_URL=${VITE_API_URL}
 RUN npm run build
 
 # ---- runtime : nginx non privilégié (port 8080, utilisateur 101) ----
-FROM nginxinc/nginx-unprivileged:1.29-alpine
+FROM nginxinc/nginx-unprivileged:1.31-alpine
 ARG VITE_KEYCLOAK_URL=http://localhost:8180
 USER root
 COPY nginx/conf.d/default.conf /etc/nginx/conf.d/default.conf
